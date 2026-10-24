@@ -100,7 +100,7 @@ No. It's a native port that runs the game logic directly on your PC, using your 
 
 This is a non-commercial fan preservation project. *Rule of Rose* and all related names, characters, and assets are the property of their respective owners. This project distributes no copyrighted material and requires users to own a legitimate copy of the game.
 
-If you are a rights holder and have concerns, please contact `YOUR-EMAIL` before taking further action.
+If you are a rights holder and have concerns, please contact `Raiko@mostima.dev` before taking further action.
 
 ## Credits
 

@@ -59,7 +59,7 @@ Create an ISO image from **your own** disc using a PC DVD drive:
 
 ### 2. Download the Port
 
-Grab the latest build from [Releases](https://github.com/raikodenpa/RoR-Port/releases) and unzip it anywhere.
+There is no download available yet
 
 ### 3. Extract Game Data
 
@@ -105,7 +105,7 @@ If you are a rights holder and have concerns, please contact `YOUR-EMAIL` before
 ## Credits
 
 - **Original game:** Punchline, published by Sony Computer Entertainment, Atlus, and 505 Games
-- **Port development:** [@YOURNAME](https://github.com/raikodenpa)
+- **Port development:** [@Raikodenpa](https://github.com/raikodenpa)
 - **Libraries:** [SDL2](https://www.libsdl.org/) and others listed in [THIRD_PARTY.md](THIRD_PARTY.md)
 
 ---

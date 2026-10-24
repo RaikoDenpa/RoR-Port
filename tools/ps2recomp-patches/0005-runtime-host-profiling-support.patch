@@ -1,0 +1,33 @@
+Subject: ps2xRuntime: build support for the game's host profiler
+
+Game sources named *_win32.cpp are compiled without the precompiled header (they include
+<windows.h>, which clashes with raylib in it), and the runner gets a linker map (/MAP) so the
+sampling profiler in src/ror_profile_win32.cpp can be resolved to functions and object files.
+
+diff --git a/ps2xRuntime/CMakeLists.txt b/ps2xRuntime/CMakeLists.txt
+--- a/ps2xRuntime/CMakeLists.txt
++++ b/ps2xRuntime/CMakeLists.txt
+@@ -458,6 +458,12 @@
+ if(PS2X_GAME_SOURCE_DIR)
+     file(GLOB_RECURSE PS2X_GAME_SRC_FILES CONFIGURE_DEPENDS "${PS2X_GAME_SOURCE_DIR}/*.cpp")
+     set_source_files_properties(${PS2X_GAME_SRC_FILES} PROPERTIES SKIP_UNITY_BUILD_INCLUSION TRUE)
++    # Host-only helpers (*_win32.cpp) include <windows.h>, which clashes with raylib in the precompiled header.
++    foreach(PS2X_GAME_SRC_FILE IN LISTS PS2X_GAME_SRC_FILES)
++        if(PS2X_GAME_SRC_FILE MATCHES "_win32\\.cpp$")
++            set_source_files_properties(${PS2X_GAME_SRC_FILE} PROPERTIES SKIP_PRECOMPILE_HEADERS TRUE)
++        endif()
++    endforeach()
+     list(APPEND RUNNER_SRC_FILES ${PS2X_GAME_SRC_FILES})
+ endif()
+ 
+@@ -514,6 +520,10 @@
+ 
+ if(PS2X_GAME_SOURCE_DIR)
+     target_include_directories(ps2EntryRunner PRIVATE "${PS2X_GAME_SOURCE_DIR}" ${PS2X_GAME_INCLUDE_DIRS})
++    if(MSVC)
++        # Linker map: function and object-file addresses for the game's host sampling profiler.
++        target_link_options(ps2EntryRunner PRIVATE /MAP)
++    endif()
+ endif()
+ 
+ target_include_directories(ps2_runtime PUBLIC

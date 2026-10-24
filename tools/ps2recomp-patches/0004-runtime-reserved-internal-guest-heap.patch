@@ -1,0 +1,67 @@
+Subject: ps2xRuntime: optional reserved arena for runtime-internal guest allocations
+
+SetupHeap points the runtime allocator (guestMalloc: GS/SIF packets, IOP host buffers, thread stacks)
+at the game's heap range. Rule of Rose's own malloc (recompiled newlib, sbrk on EndOfHeap) owns that
+range, so the first GS packet landed on the game heap's first block header at 0x852da0 (seen at the
+bedmemory.cpp(444) assert: the header holds a GIF A+D tag). reserveGuestHeapArena(base, limit) gives
+the runtime its own range; SetupHeap then leaves it alone and EndOfHeap reports base as the game's heap
+end. Without a call nothing changes.
+
+diff --git a/ps2xRuntime/include/ps2_runtime.h b/ps2xRuntime/include/ps2_runtime.h
+--- a/ps2xRuntime/include/ps2_runtime.h
++++ b/ps2xRuntime/include/ps2_runtime.h
+@@ -376,6 +376,10 @@
+     void handleTLBP(uint8_t *rdram, R5900Context *ctx);
+     void clearLLBit(R5900Context *ctx);
+     void configureGuestHeap(uint32_t guestBase, uint32_t guestLimit = PS2_RAM_SIZE);
++    // For games whose own (recompiled) malloc owns the SetupHeap range: runtime-internal guest allocations
++    // (guestMalloc) use [base, limit) instead, SetupHeap no longer moves them, and EndOfHeap reports `base` as the
++    // end of the game's heap.
++    void reserveGuestHeapArena(uint32_t base, uint32_t limit);
+     uint32_t guestMalloc(uint32_t size, uint32_t alignment = 16u);
+     uint32_t guestCalloc(uint32_t count, uint32_t size, uint32_t alignment = 16u);
+     uint32_t guestRealloc(uint32_t guestAddr, uint32_t newSize, uint32_t alignment = 16u);
+@@ -515,6 +519,7 @@
+     uint32_t m_guestHeapLimit = PS2_RAM_SIZE;
+     uint32_t m_guestHeapSuggestedBase = 0x00100000u;
+     bool m_guestHeapConfigured = false;
++    bool m_guestHeapArenaReserved = false;
+     uint32_t m_asyncCallbackStackFloor = 0x01F00000u;
+     uint32_t m_asyncCallbackStackTop = PS2_RAM_SIZE;
+ 
+diff --git a/ps2xRuntime/src/lib/ps2_runtime.cpp b/ps2xRuntime/src/lib/ps2_runtime.cpp
+--- a/ps2xRuntime/src/lib/ps2_runtime.cpp
++++ b/ps2xRuntime/src/lib/ps2_runtime.cpp
+@@ -1804,9 +1804,21 @@
+     coalesceGuestHeapLocked();
+ }
+ 
++void PS2Runtime::reserveGuestHeapArena(uint32_t base, uint32_t limit)
++{
++    std::lock_guard<std::mutex> lock(m_guestHeapMutex);
++    m_guestHeapSuggestedBase = base;
++    resetGuestHeapLocked(base, limit);
++    m_guestHeapArenaReserved = true;
++}
++
+ void PS2Runtime::configureGuestHeap(uint32_t guestBase, uint32_t guestLimit)
+ {
+     std::lock_guard<std::mutex> lock(m_guestHeapMutex);
++    if (m_guestHeapArenaReserved)
++    {
++        return; // the game's heap is its own; the runtime keeps its reserved arena
++    }
+     uint32_t normalizedBase = alignGuestHeapValue(clampGuestHeapBase(guestBase), kGuestHeapDefaultAlignment);
+     if (normalizedBase == 0u)
+     {
+@@ -1972,6 +1984,10 @@
+ uint32_t PS2Runtime::guestHeapLimit() const
+ {
+     std::lock_guard<std::mutex> lock(m_guestHeapMutex);
++    if (m_guestHeapArenaReserved)
++    {
++        return m_guestHeapBase; // the game's heap ends where the runtime's arena starts
++    }
+     return m_guestHeapConfigured ? m_guestHeapLimit : m_guestHeapSuggestedBase;
+ }
+ 

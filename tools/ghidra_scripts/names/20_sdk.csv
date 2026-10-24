@@ -1,0 +1,81 @@
+address,namespace,name,kind,evidence
+# Sony SDK 3.0.x / newlib / crt0 functions identified by call patterns (Phase 2 step 3). Syscall wrappers are named by
+# RoRSyscalls.java and self-named functions by RoRSdkStrings.java. "UNVERIFIED" marks the Sony name or role as a best guess.
+# RPC server ids and command numbers are checked against ps2sdk (fetched 2026-10-23): kernel/src/{fileio,iopheap,loadfile}.c,
+# rpc/cdvd/src/{libcdvd,ncmd,scmd}.c, rpc/memorycard/src/libmc.c, common/include/loadfile-common.h.
+#
+# crt0 / libkernl init
+0x00100248,,_exit,function,crt0 stub tail-called by exit(); jumps to Exit (0x269ad8)
+0x00100250,,_root,function,crt0 passes it to SetupThread (t0) as the root-thread entry; its body is the ExitThread syscall (v1=35)
+0x002696d8,,_InitSys,function,crt0 calls it right after SetupHeap; it calls only libkernl init routines (libc semaphores SceKernelLibc/SceKernelLibcEh; thread init creating SceKerneltopThread; SetSyscall/Copy kernel-patch installers)
+0x00260378,,InitThread,function,UNVERIFIED Sony name: called by _InitSys; CreateSema+CreateThread of "SceKerneltopThread" then ChangeThreadPriority
+0x00269ad8,,Exit,function,UNVERIFIED Sony name: _exit target; runs TLB/memory deinit (0x268e80: GetMemorySize+_InitTLB) then the _Exit syscall (4)
+# newlib
+0x0027a2e8,,exit,function,newlib exit(): walks _impure_ptr->_atexit (+0x148) calling handlers in reverse; calls _impure_ptr->__cleanup (+0x3c); tail-calls _exit; crt0 passes main's return value
+0x002f59e0,,_impure_ptr,label,read by exit() as the struct _reent pointer (+0x148 _atexit; +0x3c __cleanup)
+0x00262050,,printf,function,variadic print used by every SDK diagnostic and both assert handlers ("Assertion Failed: %s(%d)   %s\n"); wraps its core (0x261150) in the lock helpers 0x269420/0x269470; UNVERIFIED whether newlib printf or Sony scePrintf (it sits inside the libkernl/SIF code range)
+# SIF (libkernl)
+0x002630d0,,sceSifBindRpc,function,(client, server_id, mode): every library init calls it with an RPC server id (0x80000001 fileio, 0x80000003 iopheap, 0x80000006 loadfile, 0x80000592.. cdvd, 0x80000400 mcserv, 0x80001300 dbcman)
+0x002632b0,,sceSifCallRpc,function,(client, fno, mode, send, ssize, recv, rsize, ...): called with a bound client and a command number by every RPC wrapper
+0x002624b0,,sceSifAddCmdHandler,function,(cmd, handler, data): sceSifInitRpc registers handlers for the RPC system commands 0x80000008/9/a/c
+0x00262928,,sceSifInitRpc,function,registers SIF cmd handlers 0x80000008 (end) 0x80000009 (bind) 0x8000000a (call) 0x8000000c (rdata) and sets SIF reg 0x80000002
+0x002621c8,,sceSifInitCmd,function,medium confidence: sceSifGetReg/sceSifSetReg on SIF regs 0x80000000..2 and sends cmd 0x80000000/0x80000002 with 0x14-byte packets
+0x002626b0,,sceSifSendCmd,function,medium confidence: (cmd, packet, psize, src, dst, size); psize 0x14/0x40; used by sceSifCallRpc/sceSifBindRpc
+0x002626f0,,isceSifSendCmd,function,UNVERIFIED: same argument shape as sceSifSendCmd, called from the SIF cmd handlers (interrupt context)
+0x00267618,,sceSifInitIopHeap,function,binds iopheap server 0x80000003
+0x002676a0,,sceSifAllocIopHeap,function,iopheap fno 1 with a 4-byte size argument
+0x00267790,,sceSifFreeIopHeap,function,iopheap fno 2 with a 4-byte address argument
+0x00267828,,sceSifLoadIopHeap,function,iopheap fno 3 with a 0x100-byte path argument
+0x00267d30,,sceSifLoadModuleBuffer,function,loadfile (client 0x848400) fno 6 = LF_F_MOD_BUF_LOAD
+0x00267f38,,sceSifStopModule,function,loadfile fno 7 = LF_F_MOD_STOP
+0x00268140,,sceSifUnloadModule,function,loadfile fno 8 = LF_F_MOD_UNLOAD with a 4-byte module id
+0x002681d0,,sceSifSearchModuleByName,function,loadfile fno 9 = LF_F_SEARCH_MOD_BY_NAME with a 0x200-byte name buffer
+0x00268270,,sceSifSearchModuleByAddress,function,loadfile fno 10 = LF_F_SEARCH_MOD_BY_ADDRESS with a 4-byte address
+# libcdvd (clients: INIT 0x8427a8, SCMD 0x2f3b40, NCMD 0x2f3190, SEARCHFILE 0x842780, DISKREADY 0x8427d0)
+0x0024e1e8,,sceCdInit,function,binds CD_SERVER_INIT 0x80000592 and calls fno 0
+0x0024d9c0,,sceCdSearchFile,function,binds CD_SERVER_SEARCHFILE 0x80000597 and calls fno 0 with a 300-byte request
+0x0024e4d0,,sceCdDiskReady,function,binds CD_SERVER_DISKREADY 0x8000059a and calls fno 0
+0x0024e908,,sceCdRead,function,NCMD client fno 1 = CD_NCMD_READ, SIF_RPC_M_NOWAIT, 24-byte request
+0x0024ef98,,sceCdReadClock,function,SCMD client fno 1 = CD_SCMD_READCLOCK
+0x0024eae8,,sceCdGetDiskType,function,SCMD fno 3 = CD_SCMD_GETDISKTYPE
+0x0024eba8,,sceCdGetError,function,SCMD fno 4 = CD_SCMD_GETERROR
+0x0024f058,,sceCdTrayReq,function,SCMD fno 5 = CD_SCMD_TRAYREQ
+0x0024ec40,,sceCdStatus,function,SCMD fno 0xc = CD_SCMD_STATUS
+# libmc (client 0x842840, mcserv 0x80000400; command numbers = ps2sdk's newer-mcserv table)
+0x0024f148,,sceMcInit,function,binds 0x80000400; fno 0xfe (INIT); prints "libmc: too old release of mcserv.irx/mcman.irx"
+0x0024fcb8,,sceMcGetInfo,function,fno 1
+0x0024f558,,sceMcOpen,function,fno 2 with a 0x414-byte name request
+0x0024f6b8,,sceMcClose,function,fno 3
+0x0024f778,,sceMcSeek,function,fno 4
+0x0024f908,,sceMcRead,function,fno 5
+0x0024fa20,,sceMcWrite,function,fno 6
+0x002503b8,,sceMcFlush,function,fno 0xa
+0x00250088,,sceMcChdir,function,fno 0xc with a 0x414-byte name request
+0x0024fea8,,sceMcGetDir,function,fno 0xd with a 0x414-byte name request
+0x00250298,,sceMcDelete,function,fno 0xf with a 0x414-byte name request
+0x002501c8,,sceMcFormat,function,fno 0x10
+0x002507a0,,sceMcUnformat,function,fno 0x11
+0x00250870,,sceMcGetEntSpace,function,fno 0x12 (GET_ENT) with a 0x414-byte name request
+0x0024fe38,,sceMcUdCheckNewCard,function,medium confidence: prints "sceMcUdCheckNewCard RPC faild"; fno 0x35
+# libdbc / libpad2
+0x0026bf20,,sceDbcInit,function,binds dbcman 0x80001300 and 0x8000131c; prints "libdbc: Module version mismatch" / "bind failed"
+0x0026d1c0,,scePad2CreateSocket,function,UNVERIFIED: libpad2 function that rejects a buffer not 64-byte aligned ("libpad2: buffer addr is not 64 byte align")
+# libgraph
+0x0025ae98,,sceGsResetGraph,function,the only caller of SetGsCrt (syscall 2); also GsPutIMR / RemoveIntcHandler
+# libdma (channel regs: +0 CHCR, +0x10 MADR, +0x20 QWC, +0x30 TADR)
+0x0025ce88,,sceDmaGetChan,function,returns entry id (<10) of the 10-entry channel register table at 0x2f3de0
+0x0025ceb0,,sceDmaReset,function,clears CHCR/MADR/QWC/TADR of every channel in use; D_STAT = 0xff1f; puts a zeroed env; mode 1 sets D_CTRL.DMAE; returns the old DMAE
+0x0025cf90,,sceDmaPutEnv,function,medium confidence: called once by sceDmaReset with a zeroed 0x14-byte environment
+0x0025d1b8,,sceDmaSend,function,TADR=tag, QWC=0, CHCR=0x105 (from memory, chain, STR)
+0x0025d220,,sceDmaSendN,function,MADR=addr, QWC=size, CHCR=0x101 (from memory, normal, STR)
+0x0025d298,,sceDmaSendI,function,MADR=addr, QWC=size, CHCR=0x109 (from memory, interleave, STR)
+0x0025d310,,sceDmaRecv,function,QWC=0, CHCR=0x104 (to memory, chain, STR)
+0x0025d358,,sceDmaRecvN,function,MADR, QWC, CHCR=0x100 (to memory, normal, STR)
+0x0025d3d8,,sceDmaRecvI,function,MADR, QWC, CHCR=0x108 (to memory, interleave, STR)
+0x0025d458,,sceDmaSync,function,mode 1: return CHCR.STR; else busy-wait for STR=0 (0x25cd30, prints "libdma: sync timeout")
+0x0025d490,,sceDmaWatch,function,mode 1: return MADR < addr; else wait (0x25cda0, prints "libdma: sync timeout")
+# libvu0 (VU0 macro mode)
+0x0025d578,,sceVu0ApplyMatrix,function,lqc2 4 matrix rows + vector; vmulabc/vmaddabc x3/vmaddbc; sqc2 result
+0x0025d5f0,,sceVu0OuterProduct,function,vopmula/vopmsub of two vectors
+0x0025d610,,sceVu0InnerProduct,function,vmul then two vaddbc; returns x as float
+0x0025d638,,sceVu0Normalize,function,vmul/vaddbc length^2, vsqrt, vdiv 1/len, vmulq

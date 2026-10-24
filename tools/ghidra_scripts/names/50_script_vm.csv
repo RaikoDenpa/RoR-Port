@@ -1,0 +1,202 @@
+address,namespace,name,kind,evidence
+# Phase 5: the ELFR script VM (sequence/sequence.cpp and the code after it) and its native handlers.
+# Descriptive names; the real names are unknown. Details: notes/script-vm.md, sub-code names: notes/script-natives.tsv.
+#
+# Module slots, contexts and the scheduler
+0x0020ff6c,,seq_init,function,allocates the 0x20000/0x18000/0x30000 module buffers, 3 x 64 context nodes of 0xc0, the 0x10000 stack-save pool and buffers A/B (DebugAllocTagged with sequence/sequence.cpp)
+0x0020ff40,,seq_reinit,function,frees the context lists (0x210c58) then seq_init
+0x00210680,,seq_load_world,function,copies 0x18000 bytes into the world buffer, seq_slot_setup(slot 1), queues context id 0x44000000
+0x00210784,,seq_load_global,function,copies 0x20000 bytes into the global buffer, seq_slot_setup(slot 0), queues context id 0x04000000
+0x00210888,,seq_load_area,function,copies 0x30000 bytes into the area buffer, seq_slot_setup(slot 2), queues context id 0x84000000
+0x002109a4,,seq_kill_slot_contexts,function,arg 1: clear the handler list and kill world + area contexts; arg 2: area only (0x214d2c); called by GamMan 0x1ce4f4/0x1ceec8/0x1cf234
+0x00210a84,,seq_clear_vars,function,zeroes buffer A [0..0x800) and B [4..0x800)
+0x00210ad8,,seq_clear_world_vars,function,zeroes A+0x300 and B+0x20 (0x200 each) and drops the world slot's handlers
+0x00210c58,,seq_free_lists,function,frees the three per-slot context lists
+0x00210d04,,seq_ctx_cleanup,function,"finished context: releases its GamMan+0x40 objects (0x1e207c ops 2-5), drops flag 0x40's GamMan state, frees its stack-save buffer, zeroes the 0xb0 record"
+0x00210dd8,,seq_reap_finished,function,"removes finished contexts from their slot lists; world id 0x44000000 -> GamMan 0x1c5664, area id 0x84000000 -> GamMan 0x1c58ec"
+0x00211064,,seq_run_slot,function,"runs every context of the selected slot once: restore (seq_ctx_restore), args (flag 0x80), vm_step until it returns; 0 = finished"
+0x00211268,,seq_update,function,"per frame (from 0x205fa4): skip when seq+0xdc24 & 1; reap; sort new contexts into slot lists by id >> 30; run slot 0, 1, 2; GamMan 0x1ce4f4"
+0x00212bf4,,seq_ctx_wait_counter,function,"per-context frame countdown at context +0x2c; returns 1 while counting (wait_frames, native 4 sub 0)"
+0x00212c80,,seq_set_goto,function,vm branch target = script address a1 of the current slot (native 0)
+0x00212cb8,,seq_run_now,function,"runs a script function synchronously from engine code (callers GamMan+0x40 0x1dff40/0x1e02c8); queues it if it yields"
+0x0021310c,,seq_run_imdy,function,"as seq_run_now with context name 'imdy', slot 2 afterwards (from seq_handler_call)"
+0x002134c0,,seq_queue_single,function,"queues a context named 'single' (callers GamMan 0x1d4e1c/0x1d5830, task 0x1f5168)"
+0x00213760,,seq_queue_module_ctx,function,"queues the module's master context 'mst' at its first prologue (addiu sp) near the code start"
+0x00213988,,seq_queue_func_ctx,function,"queues a context at a relocated script function pointer: host = ptr + code base - [0x7dbf48 + slot*4], snapped to a prologue within +-4 words"
+0x002141fc,,seq_handler_register,function,"adds {id, function} to the handler list at seq+0xc3c0 (native 110 sub 11)"
+0x00214294,,seq_handler_start,function,"finds handler id, queues it as a context named 'none' (native 110 sub 13/14)"
+0x00214338,,seq_handler_call,function,"finds handler id and runs it nested via seq_run_imdy; sets 0x7decb0 = return pc (native 110 sub 15)"
+0x002145e4,,seq_ctx_kill,function,moves the context with this id to the finished list (native 110 sub 99)
+0x00215548,,seq_ctx_find,function,looks up a context by id in its slot's list (slot = id >> 30)
+0x002155dc,,seq_ctx_exists,function,nonzero when a context with this id exists (native 4 sub 4)
+0x00215824,,seq_slot_setup,function,"slot descriptor at 0x7de750 + slot*0x30: code = buf+0x30, data base = W + 0x450000 - hdr[0x10], gp = W, sp = W+0x780; plants buffer A/B pointers at data end -0x20/-0x10"
+0x00215bec,,seq_slot_select,function,loads a slot's descriptor and register file into the VM state
+0x00215f40,,seq_ctx_restore,function,"restores a context's registers (flag 0x200) and copies its saved 0x780-byte stack back to W"
+0x002160bc,,seq_ctx_save,function,"saves registers into the context and the 0x780-byte stack at W into a pool buffer"
+0x00216284,,seq_stack_buf_alloc,function,next free 0x800-byte buffer of the 32 in the pool at [0x7dec20]
+0x00216370,,seq_stack_buf_free,function,frees a pool buffer
+0x002163a0,,seq_args_stash,function,copies the VM registers to one of 8 slots at 0x7de820 (arguments for a new context)
+0x002164a8,,seq_args_unstash,function,loads a0-a3 from a stash slot and frees it
+0x00216500,,vm_step,function,"fetch/dispatch loop: primary table 0x2ef5e8, SPECIAL 0x2ef6e8; after a branch's delay slot either calls native (target-0x144)>>6 or jumps; returns the resume pc or 0"
+#
+# Instruction handlers (args: rs, rt, imm16 or rd, sa); quirks are the VM's, not MIPS
+0x00211810,,vm_op_nop,function,SPECIAL word 0
+0x00211818,,vm_op_add,function,SPECIAL 32
+0x00211868,,vm_op_addu,function,SPECIAL 33
+0x002118b8,,vm_op_addi,function,primary 8
+0x00211900,,vm_op_addiu,function,primary 9
+0x00211948,,vm_op_and,function,SPECIAL 36
+0x0021197c,,vm_op_andi,function,primary 12
+0x002119a4,,vm_op_div,function,SPECIAL 26
+0x002119ec,,vm_op_divu,function,SPECIAL 27; executes signed div (word 0x0043001a)
+0x00211a34,,vm_op_mult,function,SPECIAL 24; executes multu (word 0x00430019): hi is unsigned for negative operands
+0x00211a90,,vm_op_multu,function,SPECIAL 25
+0x00211aec,,vm_op_nor,function,SPECIAL 39
+0x00211b20,,vm_op_or,function,SPECIAL 37
+0x00211b54,,vm_op_ori,function,primary 13
+0x00211b7c,,vm_op_sll,function,SPECIAL 0
+0x00211ba4,,vm_op_sllv,function,SPECIAL 4
+0x00211bd8,,vm_op_sra,function,SPECIAL 3
+0x00211c00,,vm_op_srav,function,SPECIAL 7
+0x00211c34,,vm_op_srl,function,SPECIAL 2
+0x00211c5c,,vm_op_srlv,function,SPECIAL 6
+0x00211c90,,vm_op_sub,function,SPECIAL 34
+0x00211cc4,,vm_op_subu,function,SPECIAL 35
+0x00211cf8,,vm_op_xor,function,SPECIAL 38
+0x00211d2c,,vm_op_xori,function,primary 14
+0x00211d54,,vm_op_lui,function,"primary 15: imm 0x41/0x45 -> [0x7de710], 0x42/0x46 -> [0x7de710]+0x10000, else imm << 16"
+0x00211dc8,,vm_op_slt,function,SPECIAL 42
+0x00211e10,,vm_op_slti,function,primary 10
+0x00211e54,,vm_op_sltu,function,SPECIAL 43
+0x00211e9c,,vm_op_sltiu,function,primary 11
+0x00211ed8,,vm_op_beq,function,primary 4
+0x00211f7c,,vm_op_bgtz,function,primary 7
+0x00211fd0,,vm_op_blez,function,primary 6
+0x00212024,,vm_op_bne,function,primary 5
+0x00212088,,vm_op_regimm,function,primary 1: bltz (rt 0) and bgez (rt 1) only
+0x00212108,,vm_op_j,function,primary 2
+0x00212140,,vm_op_jal,function,"primary 3: target = imm16 << 2 only; ra = pc - code base + 0x8168"
+0x00212194,,vm_op_jalr,function,SPECIAL 9
+0x002121e4,,vm_op_jr,function,SPECIAL 8
+0x00212208,,vm_op_lb,function,primary 32; loads a WORD from base + imm*4
+0x0021223c,,vm_op_lwl,function,primary 34; word << 8 | (base & 0xff)
+0x0021227c,,vm_op_lh,function,primary 33; loads a WORD from base + imm
+0x002122b0,,vm_op_lbu,function,primary 36; same code as lb (word from base + imm*4)
+0x002122e4,,vm_op_lw,function,primary 35
+0x00212318,,vm_op_lhu,function,primary 37; loads a WORD
+0x0021234c,,vm_op_lwr,function,primary 38; loads a WORD
+0x00212380,,vm_op_sb,function,primary 40; stores a WORD
+0x002123b4,,vm_op_sh,function,primary 41; stores a WORD
+0x002123e8,,vm_op_swl,function,primary 42
+0x00212430,,vm_op_swr,function,primary 46
+0x00212480,,vm_op_sw,function,primary 43
+0x002124b4,,vm_op_mfhi,function,SPECIAL 16
+0x002124d4,,vm_op_mflo,function,SPECIAL 18
+0x002124f4,,vm_op_mthi,function,SPECIAL 17
+0x00212510,,vm_op_mtlo,function,SPECIAL 19
+0x0021252c,,vm_op_syscall,function,SPECIAL 12; does nothing
+0x00212534,,vm_op_break,function,SPECIAL 13; does nothing
+0x0021253c,,vm_op_lwc0,function,primary 48; does nothing
+0x00212544,,vm_op_lwc1,function,primary 49
+0x0021257c,,vm_op_lwc2,function,primary 50; does nothing
+0x00212584,,vm_op_lwc3,function,primary 51; does nothing
+0x0021258c,,vm_op_swc0,function,primary 56; does nothing
+0x00212594,,vm_op_swc1,function,primary 57
+0x002125c8,,vm_op_swc2,function,primary 58; does nothing
+0x002125d0,,vm_op_swc3,function,primary 59; does nothing
+0x002125d8,,vm_op_sdc1,function,primary 61; LOADS a word into the FPR (same as lwc1)
+0x00212610,,vm_op_cop0,function,primary 16; does nothing
+0x00212618,,vm_op_cop1,function,"primary 17: mfc1, mtc1, bc1f/bc1t (cond 0x7de740), rs 12 ends the run, fmt S/D -> table 0x2ef798 by funct"
+0x00212798,,vm_op_cop2,function,primary 18; does nothing
+0x002127a0,,vm_op_cop3,function,primary 19; does nothing
+0x00212bb4,,vm_op_mul,function,primary 28 (SPECIAL2) any funct: rd = rs * rt
+0x002127a8,,vm_fpu_add_s,function,COP1 funct 0
+0x002127dc,,vm_fpu_sub_s,function,COP1 funct 1
+0x00212810,,vm_fpu_mul_s,function,COP1 funct 2
+0x00212844,,vm_fpu_div_s,function,COP1 funct 3
+0x00212940,,vm_fpu_abs_s,function,COP1 funct 5; reads the ft field instead of fs
+0x002129c0,,vm_fpu_mov_s,function,COP1 funct 6; reads the ft field instead of fs
+0x002129e4,,vm_fpu_neg_s,function,COP1 funct 7; reads the ft field instead of fs
+0x00212b7c,,vm_fpu_trunc_w_s,function,COP1 funct 13; EE cvt.w.s on f[ft] (ft field instead of fs)
+0x002128c0,,vm_fpu_c_eq_s_18,function,COP1 funct 18: cond = (fs == ft)
+0x00212880,,vm_fpu_c_lt_s_28,function,COP1 funct 28: cond = (fs < ft)
+0x00212900,,vm_fpu_c_le_s_30,function,COP1 funct 30: cond = (fs <= ft)
+0x00212a0c,,vm_fpu_cvt_s_w,function,COP1 funct 32
+0x00212a58,,vm_fpu_c_eq_s,function,COP1 funct 50
+0x00212ae4,,vm_fpu_c_lt_s,function,COP1 funct 60
+0x00212b2c,,vm_fpu_c_le_s,function,COP1 funct 62
+0x00212a44,,vm_fpu_c_f_s,function,COP1 funct 48: cond = 0
+0x00212ac0,,vm_fpu_c_sf_s,function,COP1 funct 56: cond = 0
+#
+# Native handlers (table 0x2eed90, script address 0x400144 + 64*i)
+0x00206be4,,native_0_ctx_goto,function,returns 0xccccccce; no module calls it
+0x00206c0c,,native_1_world_seq_start,function,seq_clear_vars + GamMan 0x1c28b4
+0x00206c3c,,native_2,function,MagScene 0x13fb80 x3; role UNVERIFIED
+0x00206d54,,native_3_yield,function,returns 0xcccccccd
+0x00206d60,,native_4_wait_until,function,jump table 0x3268f0 (19)
+0x002070e0,,native_5_rand,function,rand() % max(a1 1)
+0x00207118,,native_6_message,function,switch 1-5 10 11 20 21
+0x00207308,,native_7,function,GamMan 0x1d0aa8; role UNVERIFIED
+0x00207334,,native_9,function,GamMan 0x1d0c34; role UNVERIFIED
+0x00207378,,native_12,function,jump table 0x3269a0 (501); role UNVERIFIED
+0x00207e04,,native_14,function,0x74f330 = (a1 == 0)
+0x00207e30,,native_16_camera,function,jump table 0x327180 (52); camera 0x750810
+0x0020813c,,native_18_game_misc,function,switch; sub 30 = seq_set_code_base
+0x00208ebc,,native_19,function,input UNVERIFIED
+0x002092d8,,native_20,function,jump table 0x327460 (62); role UNVERIFIED
+0x002098fc,,native_21_player_mode,function,jump table 0x327580 (32)
+0x00209b8c,,native_23_region,function,jump table 0x327600 (31); GamMan+0x40 trigger rectangles
+0x00209d08,,native_26,function,jump table 0x3276a0 (6); role UNVERIFIED
+0x00209e30,,native_27_chara_map,function,jump table 0x3276c0 (205)
+0x0020a30c,,native_28,function,jump table 0x327a00 (31); role UNVERIFIED
+0x0020a394,,native_29_jump,function,area/world change (labels ac_jump_area / ac_jump_world)
+0x0020a5c0,,native_32_debug_print,function,only sub 10: clamp string; no output
+0x0020a620,,native_33_screen,function,jump table 0x327a80 (14); fades
+0x0020a894,,native_35_nop,function,returns 0
+0x0020a89c,,native_36,function,seq 0x210a1c; role UNVERIFIED
+0x0020a8dc,,native_38,function,jump table 0x327ac0 (100); role UNVERIFIED
+0x0020aa6c,,native_39_actor_cmd,function,FourCC command block to DogActor 0x14507c
+0x0020ab40,,native_40_end,function,returns 0xccccccca
+0x0020ad24,,native_100,function,role UNVERIFIED
+0x0020b0dc,,native_106,function,role UNVERIFIED
+0x0020b1b8,,native_110_ctx,function,jump table 0x327ce0 (100); contexts and handlers
+0x0020b54c,,native_151_obj,function,object handle in t1
+0x0020bb68,,native_152,function,math; role UNVERIFIED
+0x0020bfd4,,native_155,function,jump table 0x328050 (24); role UNVERIFIED
+0x0020c40c,,native_156,function,role UNVERIFIED
+0x0020cbd0,,native_200,function,role UNVERIFIED
+0x0020cd38,,native_202,function,role UNVERIFIED
+0x0020dcd8,,native_212,function,jump table 0x328170 (51); role UNVERIFIED
+0x0020df0c,,native_252_sound,function,jump table 0x328240 (201); GamSndMan
+0x0020ec38,,native_253_movie,function,TskMovie in task slot 0x7cd474
+0x0020f7a8,,native_281,function,role UNVERIFIED
+#
+# VM and sequence state
+0x007de580,,vm_fpr,label,32 x f32 FPU registers
+0x007de600,,vm_gpr,label,32 x u32 registers r0-r31 (r28 gp = W, r29 sp, r31 ra)
+0x007de680,,vm_pc,label,host address of the instruction being executed
+0x007de690,,vm_hi,label,
+0x007de6a0,,vm_lo,label,
+0x007de6b0,,vm_branch_target,label,taken after the delay slot
+0x007de6c0,,vm_pending_branch,label,target | 0x80000000 set by branch handlers
+0x007de6d0,,vm_code_base,label,host address of the current slot's code (buf + 0x30)
+0x007de710,,vm_data_base,label,lui 0x41/0x45 value
+0x007de740,,vm_fpu_cond,label,
+0x007de750,,vm_slot_desc,label,3 x 0x30 slot descriptors
+0x002ef898,,vm_slot_regs,label,3 x 0x80 initial register files
+0x002efa98,,vm_slot_stack_image,label,3 pointers to 0x780-byte initial stack images
+0x002ef5e8,,vm_op_table,label,64 primary-opcode handlers
+0x002ef6e8,,vm_special_table,label,"SPECIAL handlers; entries 44-63 overlap vm_cop1_table"
+0x002ef798,,vm_cop1_table,label,64 COP1 S/D funct handlers
+0x002eed90,,vm_native_table,label,512 native handlers
+0x007de540,,seq_cur_node,label,context node being run
+0x007de550,,seq_cur_end,label,end sentinel of the slot list being run
+0x007decd0,,seq_cur_slot,label,
+0x007decb0,,seq_call_return_pc,label,"vm_pc saved by seq_handler_call; 0xccccccc9 resumes at +4"
+0x007de820,,seq_args_stash_regs,label,8 x 0x80 register snapshots
+0x007dec20,,seq_stack_pool,label,pointer to 32 x 0x800 stack-save buffers
+0x007dec30,,seq_stack_pool_used,label,32 flags
+0x007ce340,,seq,label,the sequence object (lists at +0x40 +0x110 +0x6200 +0x62d0; current context +0xdc30)
+0x007dbf48,,seq_code_base_by_slot,label,"seq+0xdc08: relocated address of each module's entry, set by native 18 sub 30"
+0x007dbf5c,,seq_buf_A,label,"seq+0xdc1c: 0xa00-byte script variable buffer; pointer planted at every module's data end -0x20"
+0x007dbf60,,seq_buf_B,label,"seq+0xdc20: 0xa00-byte system flag buffer; pointer planted at data end -0x10; bits set by native 21 sub 7/8"

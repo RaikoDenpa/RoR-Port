@@ -1,0 +1,5 @@
+address,namespace,name,kind,evidence
+# Game-side helpers named during Phase 2 (descriptive names; the real names are unknown).
+0x0021730c,,AssertFail,function,(file, line, expr): printf("Assertion Failed: %s(%d)   %s\n") then spins forever; target of the __FILE__/__LINE__ asserts
+0x00216ed0,,AssertFail,function,second static copy of AssertFail (format string at 0x328860 in a different TU's rodata)
+0x00100c84,,DebugAllocTagged,function,in bed/bedmemory.cpp; calls allocator 0x100a3c then stores caller line/tag/file into the block header; 68 references, callers pass __FILE__

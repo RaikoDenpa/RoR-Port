@@ -1,0 +1,5 @@
+address,namespace,name,kind,evidence
+# libgcc C++ runtime (g++ 2.9x). __rtti_user/__rtti_si are named by RoRClasses.java.
+0x00274970,,__pure_virtual,function,in vtable slots 2-8 of 5 unrelated root classes (MagLife0 EmyMain EmyOut Eff0 mnuBase); body tail-calls __terminate
+0x002749a0,,__terminate,function,calls through function pointer __terminate_func; tail-called by __pure_virtual
+0x002f5638,,__terminate_func,label,data word loaded and called by __terminate (initial value 0x274988)

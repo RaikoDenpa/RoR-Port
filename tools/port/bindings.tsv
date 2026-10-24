@@ -1,0 +1,231 @@
+# PS2Recomp bindings allowlist: every function bound to a runtime handler or overridden by src/, by address.
+# tools/port/gen_config.py checks each row against the Ghidra export and refuses runtime library handlers
+# (stub/syscall) on game code. kind: stub / syscall = PS2Recomp runtime handler (config stubs, handler@addr),
+# override = our handler in src/ (gen/ror_bindings.inc), trace = log calls around what runs there (handler -).
+# name = the Ghidra name the row was written against.
+# address	kind	handler	name	note
+#
+# --- runtime library handlers: bound by name in the Phase 6 trial (port-strategy.md 2.1), which reached main ---
+0x0024d9c0	stub	sceCdSearchFile	sceCdSearchFile	
+0x0024e1e8	stub	sceCdInit	sceCdInit	
+0x0024e4d0	stub	sceCdDiskReady	sceCdDiskReady	
+0x0024e908	stub	sceCdRead	sceCdRead	
+0x0024eae8	stub	sceCdGetDiskType	sceCdGetDiskType	
+0x0024eba8	stub	sceCdGetError	sceCdGetError	
+0x0024ec40	stub	sceCdStatus	sceCdStatus	
+0x0024ef98	stub	sceCdReadClock	sceCdReadClock	
+0x0024f058	stub	sceCdTrayReq	sceCdTrayReq	
+0x0025ae98	stub	sceGsResetGraph	sceGsResetGraph	
+0x0025b588	stub	sceGsPutDrawEnv	sceGsPutDrawEnv	
+0x0025ba00	stub	sceGsSyncPath	sceGsSyncPath	
+0x0025bd18	stub	sceGsSetDefLoadImage	sceGsSetDefLoadImage	
+0x0025c040	stub	sceGsExecLoadImage	sceGsExecLoadImage	
+0x0025c1c0	stub	sceGsExecStoreImage	sceGsExecStoreImage	
+0x0025ce88	stub	sceDmaGetChan	sceDmaGetChan	
+0x0025ceb0	stub	sceDmaReset	sceDmaReset	
+0x0025cf90	stub	sceDmaPutEnv	sceDmaPutEnv	
+0x0025d1b8	stub	sceDmaSend	sceDmaSend	
+0x0025d220	stub	sceDmaSendN	sceDmaSendN	
+0x0025d298	stub	sceDmaSendI	sceDmaSendI	
+0x0025d310	stub	sceDmaRecv	sceDmaRecv	
+0x0025d358	stub	sceDmaRecvN	sceDmaRecvN	
+0x0025d3d8	stub	sceDmaRecvI	sceDmaRecvI	
+0x0025d458	stub	sceDmaSync	sceDmaSync	
+0x0025d490	stub	sceDmaWatch	sceDmaWatch	
+0x0025d578	stub	sceVu0ApplyMatrix	sceVu0ApplyMatrix	
+0x0025d5f0	stub	sceVu0OuterProduct	sceVu0OuterProduct	
+0x0025d610	stub	sceVu0InnerProduct	sceVu0InnerProduct	
+0x0025d638	stub	sceVu0Normalize	sceVu0Normalize	
+0x0025f420	syscall	SetGsCrt	SetGsCrt	
+0x0025f500	syscall	AddIntcHandler	AddIntcHandler	
+0x0025f510	syscall	AddIntcHandler	AddIntcHandler	
+0x0025f520	syscall	RemoveIntcHandler	RemoveIntcHandler	
+0x0025f530	syscall	AddDmacHandler	AddDmacHandler	
+0x0025f540	syscall	AddDmacHandler	AddDmacHandler	
+0x0025f550	syscall	RemoveDmacHandler	RemoveDmacHandler	
+0x0025f560	syscall	EnableIntc	_EnableIntc	
+0x0025f570	syscall	DisableIntc	_DisableIntc	
+0x0025f580	syscall	EnableDmac	_EnableDmac	
+0x0025f590	syscall	DisableDmac	_DisableDmac	
+0x0025f5a0	syscall	SetAlarm	SetAlarm	
+0x0025f5b0	syscall	ReleaseAlarm	ReleaseAlarm	
+0x0025f5c0	syscall	iEnableIntc	_iEnableIntc	
+0x0025f5d0	syscall	iDisableIntc	_iDisableIntc	
+0x0025f5e0	syscall	iEnableDmac	_iEnableDmac	
+0x0025f5f0	syscall	iDisableDmac	_iDisableDmac	
+0x0025f600	syscall	iSetAlarm	iSetAlarm	
+0x0025f620	syscall	CreateThread	CreateThread	
+0x0025f630	syscall	DeleteThread	DeleteThread	
+0x0025f640	syscall	StartThread	_StartThread	
+0x0025f660	syscall	ExitDeleteThread	ExitDeleteThread	
+0x0025f670	syscall	TerminateThread	TerminateThread	
+0x0025f6b0	syscall	ChangeThreadPriority	ChangeThreadPriority	
+0x0025f6c0	syscall	iChangeThreadPriority	iChangeThreadPriority	
+0x0025f6d0	syscall	RotateThreadReadyQueue	RotateThreadReadyQueue	
+0x0025f710	syscall	GetThreadId	GetThreadId	
+0x0025f720	syscall	ReferThreadStatus	ReferThreadStatus	
+0x0025f740	syscall	SleepThread	SleepThread	
+0x0025f750	syscall	WakeupThread	WakeupThread	
+0x0025f760	syscall	iWakeupThread	_iWakeupThread	
+0x0025f790	syscall	SuspendThread	SuspendThread	
+0x0025f7b0	syscall	ResumeThread	ResumeThread	
+0x0025f800	syscall	EndOfHeap	EndOfHeap	
+0x0025f820	syscall	CreateSema	CreateSema	
+0x0025f830	syscall	DeleteSema	DeleteSema	
+0x0025f840	syscall	SignalSema	SignalSema	
+0x0025f850	syscall	iSignalSema	iSignalSema	
+0x0025f860	syscall	WaitSema	WaitSema	
+0x0025f870	syscall	PollSema	PollSema	
+0x0025f880	syscall	iPollSema	iPollSema	
+0x0025f8a0	syscall	iReferSemaStatus	iReferSemaStatus	
+0x0025f8c0	syscall	SetOsdConfigParam	SetOsdConfigParam	
+0x0025f8d0	syscall	GetOsdConfigParam	GetOsdConfigParam	
+0x0025faa0	syscall	FlushCache	FlushCache	
+0x0025faf0	stub	sceSifStopDma	sceSifStopDma	
+0x0025fb40	syscall	GsGetIMR	GsGetIMR	
+0x0025fb60	syscall	GsPutIMR	GsPutIMR	
+0x0025fb90	syscall	SetVSyncFlag	SetVSyncFlag	
+0x0025fbc0	stub	sceSifDmaStat	sceSifDmaStat	
+0x0025fbe0	stub	sceSifSetDma	sceSifSetDma	
+0x0025fbf0	stub	isceSifSetDma	isceSifSetDma	
+0x0025fc00	stub	sceSifSetDChain	sceSifSetDChain	
+0x0025fc10	stub	isceSifSetDChain	isceSifSetDChain	
+0x0025fc20	stub	sceSifSetReg	sceSifSetReg	
+0x0025fc30	stub	sceSifGetReg	sceSifGetReg	
+0x0025fc50	syscall	Deci2Call	Deci2Call	
+0x0025fc80	syscall	GetMemorySize	GetMemorySize	
+0x0025fc90	syscall	InitTLB	_InitTLB	
+0x002621c8	stub	sceSifInitCmd	sceSifInitCmd	
+0x002624b0	stub	sceSifAddCmdHandler	sceSifAddCmdHandler	
+0x002626b0	syscall	sceSifSendCmd	sceSifSendCmd	
+0x00262928	stub	sceSifInitRpc	sceSifInitRpc	
+0x002630d0	stub	sceSifBindRpc	sceSifBindRpc	
+0x002632b0	syscall	sceSifCallRpc	sceSifCallRpc	
+0x00267618	stub	sceSifInitIopHeap	sceSifInitIopHeap	
+0x002676a0	stub	sceSifAllocIopHeap	sceSifAllocIopHeap	
+0x00267790	stub	sceSifFreeIopHeap	sceSifFreeIopHeap	
+0x00267828	stub	sceSifLoadIopHeap	sceSifLoadIopHeap	
+0x00267d30	syscall	sceSifLoadModuleBuffer	sceSifLoadModuleBuffer	
+0x00268c90	syscall	Copy	Copy	
+0x00268cd8	syscall	GetEntryAddress	GetEntryAddress	
+0x00268ce8	syscall	SetSyscall	SetSyscall	
+0x002694f8	syscall	Copy	Copy	
+0x002696c8	syscall	SetSyscall	SetSyscall	
+0x00269730	syscall	SetSyscall	SetSyscall	
+0x00269740	syscall	Copy	Copy	
+0x00269788	syscall	GetEntryAddress	GetEntryAddress	
+0x002698b0	syscall	Copy	Copy	
+0x002698f0	syscall	SetSyscall	SetSyscall	
+0x00269b50	syscall	SetSyscall	SetSyscall	
+0x00269b60	syscall	Copy	Copy	
+0x00269ba8	syscall	GetEntryAddress	GetEntryAddress	
+0x0027a2e8	stub	exit	exit	
+#
+# --- overrides, debug: script labels, asserts, printf (port.md "Debug plumbing") ---
+0x0020a5c0	override	ror_native32	native_32_debug_print	native 32 sub 10: script label string -> host log with the running module
+0x0021730c	override	ror_AssertFail	AssertFail	(file, line, expr) -> host log, then break
+0x00216ed0	override	ror_AssertFail	AssertFail	second static copy (different TU rodata)
+0x00262050	override	ror_printf	printf	SDK/game printf -> host log
+0x00243e80	override	ror_rx_printf	FUN_00243e80	RX middleware printf (tty buffer, sceWrite) -> host log
+#
+# --- overrides, file I/O: rx file API on host files under extracted/disc (port-strategy.md 3, File I/O) ---
+0x002456b0	override	ror_rxFileOpen	rxFileOpen	(path, mode 0x8001) -> fd 1..63, synchronous
+0x002456d0	override	ror_rxFileOpenStream	FUN_002456d0	(path, prio, ring, chunk), mode 0x18001: sndman STR streams
+0x00245720	override	ror_rxFileClose	rxFileClose	
+0x00245860	override	ror_rxFileRead	rxFileRead	(fd, buf, size) -> bytes, completes at once
+0x00245a20	override	ror_rxFileWrite	rxFileWrite	disc is read-only: -1
+0x00245b68	override	ror_rxFileSeek	rxFileSeek	(fd, offset, whence 0/1/2) -> position
+0x00245c00	override	ror_rxFileSync	rxFileSync	(fd, nowait) -> 0: never busy
+0x00245cd0	override	ror_rxStreamCmd	FUN_00245cd0	stream ring command (sndman 0x180900 loop mode): 0
+0x00245d88	override	ror_rxStreamPause	FUN_00245d88	(fd, flag) -> previous flag
+0x00245e00	override	ror_rxStreamReadPtr	FUN_00245e00	ring base + read offset
+0x00245e50	override	ror_rxStreamReadPos	FUN_00245e50	ring read offset
+0x00245e98	override	ror_rxStreamRingSize	FUN_00245e98	ring size
+0x00245ee0	override	ror_rxStreamAvail	FUN_00245ee0	bytes buffered: 0 (no audio yet)
+0x00245f50	override	ror_rxStreamConsume	FUN_00245f50	(fd, n): advance read offset
+0x002478b0	override	ror_rxFileSizeByPath	FUN_002478b0	device call: size of a stream file
+0x002646f0	override	ror_sceOpen	sceOpen	libkernl fileio: cdrom0:\X;1 -> disc root
+0x00264980	override	ror_sceClose	sceClose	
+0x00264af8	override	ror_sceLseek	sceLseek	
+0x00264d38	override	ror_sceRead	sceRead	
+0x00264fa8	override	ror_sceWrite	sceWrite	fd 1/2 -> host log, others -1
+#
+# --- overrides, threads/vsync: single-threaded, host VBlank clock at 50 Hz (port-strategy.md 3, Threads and vsync) ---
+0x00260378	override	ror_InitThread	InitThread	no SceKerneltopThread: return an id
+0x0024bdc8	override	ror_rxThInit	rxThInit	no idle/worker threads
+0x0024cc10	override	ror_rxThCreate	rxThCreate	only rxfile used it: logged, -1
+0x0024c430	override	ror_rxThWait	rxThWait	nothing to resume: return
+0x0024bd30	override	ror_rxThQueueCallback	FUN_0024bd30	worker callback (fn, a, b, c): run inline
+0x0024bd08	override	ror_rxThQueuedCount	FUN_0024bd08	0
+0x0024cd88	override	ror_rxThAlarmCallback	FUN_0024cd88	alarm-deferred wakeup for rxThWait: dropped
+0x0024c7f0	override	ror_nop	FUN_0024c7f0	rx sema signal around blocking ops
+0x0024c880	override	ror_nop	FUN_0024c880	rx sema poll + alarm around blocking ops
+0x0024d320	override	ror_rxWaitVblank	rxWaitVblank	0 next, 1 none, n>1 n VBlanks, -1 counter
+0x0024d1a0	override	ror_nop	rxVblankInstall	rxVblankInstall: the host clock counts VBlanks
+0x0025c850	override	ror_gs_set_vblank_handler	gs_set_vblank_handler	records the handler; the host clock runs it
+0x00118904	override	ror_wait_vsync_swap	MagSystem::wait_vsync_swap	25 Hz pacing with vblank_handler semantics, DMA sync, env swap
+#
+# --- overrides, boot: no IOP, no RX device layer (port-strategy.md 3, Other SDK calls) ---
+0x00242de0	override	ror_nop	FUN_00242de0	IOP reboot + module loading, rx device setup
+0x00244888	override	ror_nop	FUN_00244888	rx exception handlers (SetVTLBRefillHandler x12)
+0x002439f0	override	ror_nop	FUN_002439f0	rx subsystem init
+0x00245530	override	ror_nop	FUN_00245530	rxfile init (device select 0x24a6a0)
+0x002450e8	override	ror_nop	FUN_002450e8	RX "System Monitor" (hooks _exit, GS display)
+0x00206340	override	ror_nop	FUN_00206340	game crash screen install (SetVTLBRefillHandler x12)
+#
+# --- overrides, placeholders until the real seams exist (the pad rows are the real pad seam, src/ror_pad.cpp) ---
+0x001f5b38	override	ror_TskMovie_exec	TskMovie::exec	nonzero = movie done: Tasks_run ends the task, term restores vsync 2
+0x00239ca8	override	ror_nop	FUN_00239ca8	rxsnd init (from sndman 0x17f834): binds RPC 0xd000 until the IOP answers (0x2418d8), client tables, hooks
+0x0023c0e0	override	ror_snd_bank_open	FUN_0023c0e0	XVAB open -> bank id
+0x0023c648	override	ror_snd_one	FUN_0023c648	XVAB loaded? -> yes
+0x0023c4d0	override	ror_nop	FUN_0023c4d0	XVAB close -> 0 done
+0x0023dd90	override	ror_snd_voice_play	FUN_0023dd90	SE play -> voice id
+0x0023e150	override	ror_nop	FUN_0023e150	SE voice status -> 0 not playing
+0x0023e020	override	ror_nop	FUN_0023e020	SE stop
+0x0023e188	override	ror_nop	FUN_0023e188	SE params
+0x0023e250	override	ror_nop	FUN_0023e250	SE params
+0x0023e2e8	override	ror_nop	FUN_0023e2e8	SE volume
+0x0023e438	override	ror_nop	FUN_0023e438	SE pitch
+0x0023fbf0	override	ror_snd_adpcm_open	FUN_0023fbf0	ADPCM stream open (wrapper) -> handle
+0x0023fc30	override	ror_snd_adpcm_open	FUN_0023fc30	ADPCM stream open -> handle
+0x00240080	override	ror_snd_adpcm_status	FUN_00240080	status: in use | finished (0x05)
+0x00240168	override	ror_nop	FUN_00240168	stream space for data -> 0
+0x00240a38	override	ror_nop	FUN_00240a38	stream data (wrapper) -> 0 bytes
+0x00240180	override	ror_nop	FUN_00240180	stream data -> 0 bytes
+0x00240a50	override	ror_nop	FUN_00240a50	stream end of data
+0x0023ff48	override	ror_nop	FUN_0023ff48	stream close
+0x00240e20	override	ror_nop	FUN_00240e20	stream pause
+0x00240ec0	override	ror_nop	FUN_00240ec0	stream param
+0x00240f60	override	ror_nop	FUN_00240f60	stream volume
+0x00241238	override	ror_nop	FUN_00241238	stream param
+0x0023a0b0	override	ror_nop	FUN_0023a0b0	master volume
+0x0023dc98	override	ror_nop	FUN_0023dc98	SE volume
+0x0023faf8	override	ror_nop	FUN_0023faf8	stream volume
+0x00239dd8	override	ror_nop	FUN_00239dd8	RPC command flush
+0x0023bfa8	override	ror_nop	FUN_0023bfa8	
+0x0023bfe0	override	ror_nop	FUN_0023bfe0	
+0x0023ebd0	override	ror_nop	FUN_0023ebd0	EE-memory stream open -> id 0
+0x0024f148	override	ror_sceMcInit	sceMcInit	libmc: empty formatted card in slot 1, slot 2 empty
+0x0024f558	override	ror_sceMcOpen	sceMcOpen	
+0x0024f6b8	override	ror_sceMcClose	sceMcClose	
+0x0024f778	override	ror_sceMcSeek	sceMcSeek	
+0x0024f908	override	ror_sceMcRead	sceMcRead	
+0x0024fa20	override	ror_sceMcWrite	sceMcWrite	
+0x0024fb98	override	ror_sceMcSync	FUN_0024fb98	1 with the stored result, -1 if nothing pending
+0x0024fcb8	override	ror_sceMcGetInfo	sceMcGetInfo	
+0x0024fea8	override	ror_sceMcGetDir	sceMcGetDir	
+0x00250088	override	ror_sceMcChdir	sceMcChdir	
+0x002501c8	override	ror_sceMcFormat	sceMcFormat	
+0x00250298	override	ror_sceMcDelete	sceMcDelete	
+0x002503b8	override	ror_sceMcFlush	sceMcFlush	
+0x002507a0	override	ror_sceMcUnformat	sceMcUnformat	
+0x00250870	override	ror_sceMcGetEntSpace	sceMcGetEntSpace	
+0x0024f498	override	ror_nop	FUN_0024f498	libmc sync RPC 0x15
+0x0024f680	override	ror_sceMcMkdir	FUN_0024f680	libmc RPC helper, command 0xb
+0x00250648	override	ror_sceMcRename	FUN_00250648	libmc RPC helper, command 0x13
+0x0026bf20	override	ror_one	sceDbcInit	sceDbcInit: no IOP dbcman
+0x0026d1c0	override	ror_scePad2CreateSocket	scePad2CreateSocket	socket = port
+0x0026d2c8	override	ror_nop	FUN_0026d2c8	socket delete
+0x0026d4c8	override	ror_one	FUN_0026d4c8	pad state: always connected (1)
+0x0026d320	override	ror_pad_read	FUN_0026d320	raw data from host keyboard/gamepad (config/pad.ini): u16 buttons active-low, sticks +2..+5
+0x0026da50	override	ror_nop	FUN_0026da50	vibration

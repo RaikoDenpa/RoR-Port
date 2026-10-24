@@ -16,6 +16,7 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace
 {
@@ -173,6 +174,24 @@ namespace
         std::unique_ptr<GSRasterBackend> m_inner;
     };
 
+    TracingBackend *g_backend = nullptr;
+
+    // ROR_GS_VRAM=1: the 4 MB of GS local memory next to the trace, at the start and end of the frame
+    // (tools/port/gs_vram.py decodes textures and CLUTs from it).
+    void dumpVram(const std::string &path)
+    {
+        const char *e = std::getenv("ROR_GS_VRAM");
+        if (!e || *e != '1' || !g_backend)
+            return;
+        std::vector<uint8_t> vram;
+        g_backend->SnapshotVram(vram);
+        if (FILE *f = std::fopen(path.c_str(), "wb"))
+        {
+            std::fwrite(vram.data(), 1, vram.size(), f);
+            std::fclose(f);
+        }
+    }
+
     void writePrivileged(PS2Runtime *runtime)
     {
         const GSRegisters &r = runtime->memory().gs();
@@ -214,7 +233,9 @@ namespace ror
     {
         const char *f = std::getenv("ROR_GS_TRACE");
         g_traceFrame = f && *f ? std::strtoull(f, nullptr, 10) : 0;
-        runtime.gs().setRasterBackend(std::make_unique<TracingBackend>(std::make_unique<GSCpuBackend>()));
+        auto backend = std::make_unique<TracingBackend>(std::make_unique<GSCpuBackend>());
+        g_backend = backend.get();
+        runtime.gs().setRasterBackend(std::move(backend));
     }
 
     uint64_t gsBackendNanos() { return g_backendNs.load(std::memory_order_relaxed); }
@@ -238,11 +259,13 @@ namespace ror
                              static_cast<unsigned long long>(frame), static_cast<unsigned long long>(frame),
                              static_cast<unsigned long long>(frame + 1));
                 writePrivileged(runtime);
+                dumpVram("gs_frame_" + std::to_string(frame) + "_start.vram");
             }
         }
         else if (!leaving && frame == g_traceFrame && g_out)
         {
             writePrivileged(runtime);
+            dumpVram("gs_frame_" + std::to_string(frame) + "_end.vram");
             std::fclose(g_out);
             g_out = nullptr;
             ror::log("gs trace: %u draws", g_draws);

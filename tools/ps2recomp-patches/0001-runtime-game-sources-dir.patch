@@ -1,0 +1,39 @@
+Subject: ps2xRuntime: build game sources from an outside directory
+
+PS2X_GAME_SOURCE_DIR (recursive *.cpp, kept out of unity batches) and PS2X_GAME_INCLUDE_DIRS let
+the Rule of Rose overrides in src/ and the generated binding list be compiled into ps2EntryRunner
+without copying them into src/runner (whose tracked placeholder the generated code overwrites).
+
+diff --git a/ps2xRuntime/CMakeLists.txt b/ps2xRuntime/CMakeLists.txt
+index 589d768..d11235a 100644
+--- a/ps2xRuntime/CMakeLists.txt
++++ b/ps2xRuntime/CMakeLists.txt
+@@ -450,6 +450,17 @@ elseif(EXISTS "${ROOT_MAIN_CPP}")
+     list(APPEND RUNNER_SRC_FILES "${ROOT_MAIN_CPP}")
+ endif()
+ 
++# Game-specific sources kept outside this tree (game overrides). Compiled outside the unity batches so editing
++# one does not rebuild generated code.
++set(PS2X_GAME_SOURCE_DIR "" CACHE PATH "Directory of extra game sources (*.cpp, recursive) linked into ps2EntryRunner")
++set(PS2X_GAME_INCLUDE_DIRS "" CACHE STRING "Extra include directories for the game sources")
++set(PS2X_GAME_SRC_FILES "")
++if(PS2X_GAME_SOURCE_DIR)
++    file(GLOB_RECURSE PS2X_GAME_SRC_FILES CONFIGURE_DEPENDS "${PS2X_GAME_SOURCE_DIR}/*.cpp")
++    set_source_files_properties(${PS2X_GAME_SRC_FILES} PROPERTIES SKIP_UNITY_BUILD_INCLUSION TRUE)
++    list(APPEND RUNNER_SRC_FILES ${PS2X_GAME_SRC_FILES})
++endif()
++
+ if(PS2X_IS_ANDROID)
+     add_library(ps2EntryRunner SHARED
+         ${RUNNER_SRC_FILES}
+@@ -501,6 +512,10 @@ if(MSVC)
+     target_compile_options(ps2EntryRunner PRIVATE /FS)
+ endif()
+ 
++if(PS2X_GAME_SOURCE_DIR)
++    target_include_directories(ps2EntryRunner PRIVATE "${PS2X_GAME_SOURCE_DIR}" ${PS2X_GAME_INCLUDE_DIRS})
++endif()
++
+ target_include_directories(ps2_runtime PUBLIC
+     ${CMAKE_CURRENT_SOURCE_DIR}/include
+     ${CMAKE_CURRENT_SOURCE_DIR}/src/lib/Kernel

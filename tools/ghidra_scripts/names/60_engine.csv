@@ -1,0 +1,73 @@
+address,namespace,name,kind,evidence
+# Phase 5 part 2: main loop, frame, render submission, threads. Descriptive names; details in notes/engine.md.
+#
+# Boot and main loop
+0x00205cd4,,main,function,called by crt0 entry 0x100238; IOP/rx setup then game init 0x205e00 and main_loop
+0x00205af0,,main_parse_args,function,"argv options (strcmp against 0x3266e8..) -> MagSystem 0x117950 mode"
+0x00205e00,,game_init,function,"MagSystem/MagScene init, global script (GamMan 0x1c2fe4), optional GamMan::loadWorld(arg), vsync interval 0x2981a0 = 2; SelLang menu 0x10010 when 0x7ab1b0 != 0"
+0x00205fa4,,main_loop,function,"never returns: per frame RCNT0 = 0, perf 0x205720, seq_update, GamMan_update, Tasks_run, MagSystem_frame, GamMan 0x1c66ec (empty)"
+0x00205f7c,,game_term,function,MagSystem 0x118080 then 0x20611c; after main_loop (unreachable)
+#
+# MagSystem (0x713600): one frame of input, scene, sound service and rendering
+0x0011848c,MagSystem,frame,function,"pads (0x101ccc x2), MagScene::update, sndman_frame, packets begin, MagScene::render, post-process, packets end, wait_vsync_swap, kick_dma"
+0x001185f0,MagSystem,packets_begin,function,i3r_frame_begin on MagSystem+0x3a0
+0x001187f0,MagSystem,packets_end,function,"i3r overflow assert, heap check 0x1015fc, i3r_frame_end (ordering table -> DMA chain), optional screenshot"
+0x0011860c,MagSystem,screenshot,function,"writes the frame buffer as a BMP through sceOpen/sceWrite and sceGsExecStoreImage (debug)"
+0x00118904,MagSystem,wait_vsync_swap,function,"WaitSema(m_v_sema) then drains it; sceDmaSync(VIF1); FlushCache; 0x25b908 puts the display/draw env of buffer (frame & 1)"
+0x001189f0,MagSystem,kick_dma,function,sceGsSyncPath then sceDmaSend(DMA ch1 VIF1 / i3r chain head) once per frame
+0x00117fc8,MagSystem,init_vsync,function,"CreateSema m_v_sema (0x2981a4); vblank handler 0x1176ec through 0x25c850"
+0x001176ec,MagSystem,vblank_handler,function,"INTC 2 (VBlank start): count 0x29819c, movie tick 0x1827e8, iSignalSema(m_v_sema) every [0x2981a0] vblanks"
+0x00117754,MagSystem,vblank_handler_every,function,variant that signals every vblank; no code reference found
+0x00117a28,MagSystem,init_graphics,function,"sceGsResetGraph(0, 1, 3, 0) PAL interlaced, two sceGsDefDispEnv 512x448, DMA ch1, rx vblank tick, VU microcode upload (0x220a50), packet arena 0x32f580 + 0x35c000 bytes"
+0x0025c850,,gs_set_vblank_handler,function,"replaces the handler it installed before: RemoveIntcHandler(2) / AddIntcHandler(2, fn)"
+0x0025b908,,gs_swap_env,function,"0x25b4c8 on display env (frame & 1), sceGsPutDrawEnv of the other buffer"
+#
+# MagScene (0x725b40)
+0x00132948,MagScene,update,function,"state machine at +0x2430: 0 start, 1 play, 2 wait windows, 3/4 fade then menu, 5 focus, 6 special, 7 menu, 8, 9 debug"
+0x0013beb4,MagScene,render,function,"mag/magSceneRender.cpp: view/fog/light/render stages; nodes into the i3r ordering table"
+0x0013c490,MagScene,render_post,function,MagLife render 0x11a2fc and MagLifeBwn::renderPostProcess
+0x001361e4,MagScene,MagScene,function,"constructor: DogModel/DogEntity/DogCamera members and the MagLifeMenu* objects (vtables stored at +0x2bfd4 ...)"
+0x00136e60,MagScene,~MagScene,function,destructor (same members)
+0x00135928,MagScene,request_menu,function,"state = 3, menu code at +0x2438 (0x10005 = title, used by native 18 sub 22)"
+0x00135984,MagScene,open_menu,function,"menu code -> member: 0x10000 Item 0x10001 Map 0x10002 Stock 0x10003 Save 0x10004 Load 0x10005 Title 0x10006 Opt 0x10007 Movie 0x10008 Mcd 0x10009 Now 0x1000b Special 0x1000c-f Special2 0x10010 SelLang; 0x40000/0x80000/0x100000 bits Board2D/Board3D/PBook"
+0x00135cf0,MagScene,close_menu,function,menu vfunc +0x54; state = 4
+0x00100258,,submode_push,function,"bed/bedsubmode.cpp: pushes a 16-byte record on a 4-deep stack (count at +0x50)"
+0x001002c0,,submode_pop,function,bed/bedsubmode.cpp: pops it
+#
+# GamMan, tasks, sound service
+0x001c6580,GamMan,update,function,"frame counter +0x21f60 (bit 0 every 25 frames), player/buddy positions, GamSndMan listener (0x1e245c), trigger regions GamMan+0x40 0x1e02c8 (can run scripts now)"
+0x001e8e70,,Tasks_run,function,"task manager 0x7cdc80: runs Tsk* objects whose next time <= now through vtable +0x24; nonzero result or timeout ends them"
+0x001e864c,,Tasks_spawn,function,"(mgr, ..., task object, ..., id out): 0x40-byte record, id at +0xc"
+0x001e91cc,,Tasks_alive,function,id in the alive list (0x100 entries at +0x288)
+0x001e8b74,,Tasks_kill,function,queues the id for removal
+0x0017f8d0,,sndman_frame,function,"sndman 0x7dc480 per frame: 0x17fd88, 0x1818dc/0x181b64 on 0x7ddfc0, rxsnd 0x239dd8, 0x17fa88"
+0x001e245c,GamSndMan,update_listener,function,listener = camera position 0x750850 (or other) -> positional emitters 0x1e5074
+#
+# i3r packet arena (MagSystem+0x3a0)
+0x00221828,,i3r_packets_init,function,"(ctx, arena, size, parts) = (MagSystem+0x3a0, 0x32f580, 0x35c000, 2): arena 0x32f580-0x68b580 in two halves of 0x1ae000; two node allocators of 0x200"
+0x002215c8,,i3r_frame_begin,function,"selects this frame's half of the arena: +0xf4 low pointer, +0xf8 high pointer; resets the ordering table"
+0x00221688,,i3r_frame_end,function,0x2266c0 links the ordering table into one DMA chain; head at +0x118
+0x00221708,,i3r_add_node,function,"allocates a 0xe60-byte render node from the top and inserts it by sort key (float bits made sortable)"
+0x002211a8,,i3r_alloc_top,function,+0xf8 -= n qwords
+0x00221128,,i3r_free_bytes,function,+0xf8 - +0xf4
+0x00221178,,i3r_overflow_bytes,function,> 0 when the two ends crossed (MagSystem asserts)
+0x00221120,,i3r_chain_head,function,+0x118
+0x00220a50,,i3r_upload_microcode,function,"init: sends the VU1 image (tag 0x221000) on DMA ch1 and the VU0 image (tag 0x220fc0) on ch0, then SPR setup"
+0x00221000,,i3r_vu1_microcode_tag,function,"DMA ref tag: 0x354 qwords at 0x2932b0 (.vutext, 15 VU1 programs)"
+0x00220fc0,,i3r_vu0_microcode_tag,function,DMA ref tag: 0x9c qwords at 0x2969f0 (VU0 programs)
+0x00106770,,tex_upload,function,"called by DogActor/DogModel/Eff*::renderPreMain: rx lock, 0x221d90 (immediate transfer, sceDmaSync), unlock"
+#
+# Threads and interrupts (RX middleware thread layer; Sony names unknown)
+0x0024bdc8,,rxThInit,function,"vblank tick, sems 0x831e40/44/48, idle thread 0x24bc18 (stack 0x842140 0x400, prio base+4), worker 0x24bb58 (0x832140 0x10000, base+2, suspended)"
+0x0024cc10,,rxThCreate,function,"up to 8 rx threads (table 0x831e70, 16 bytes each); created at base + [0x2f1f80]; alarm 0x24c5a0"
+0x0024bad8,,rxThCreateKernel,function,CreateThread + StartThread wrapper
+0x0024c5a0,,rxThAlarmSlice,function,"alarm handler: raises the next rx thread's priority in turn, re-arms with iSetAlarm"
+0x0024bc18,,rxThIdle,function,spins while interrupts are on; prints DI error otherwise
+0x0024bb58,,rxThWorker,function,runs queued callbacks from a 32-entry ring at 0x831ef0
+0x0024c430,,rxThWait,function,"main thread: resumes the worker, WaitSema(0x831e40), suspends it again"
+0x0024d1a0,,rxVblankInstall,function,refcounted AddIntcHandler(2 = VBlank start) for rxVblankHandler; RCNT0 mode 0x8b
+0x0024d120,,rxVblankHandler,function,vblank counter 0x2f1f90 and GS CSR field bit
+0x0024d320,,rxWaitVblank,function,"0 = next vblank, n > 0 = n vblanks, -1 = read the counter"
+0x0024b0e8,,rxfile_start_thread,function,"rxfile reader thread 0x24b1d8, stack 0x820820 size 0x10000 (request value 2)"
+0x0024b1d8,,rxfile_thread,function,"request loop: device vtable ops (+0xc/+0x10/+0x14/+0x18), completion callbacks"
+0x002602a0,,SceKerneltopThread_main,function,"WaitSema then WakeupThread / RotateThreadReadyQueue / SuspendThread for requests queued by interrupt handlers"

@@ -1,0 +1,86 @@
+address,namespace,name,kind,evidence
+# Phase 3: file loading path. Descriptive names unless stated; the RX middleware's own function names are unknown
+# ("rxThAddCallback" in its strings suggests an rxXxx convention, so rxFile* is a guess).
+#
+# bed/bedpfh.cpp: RTPK archive view (notes/formats/pfh.md)
+0x00101738,Pfh,clear,function,zeroes the 5-word view (top + 4 table pointers)
+0x00101750,Pfh,attach,function,checks magic 0x4b505452 ("RTPK"; assert checkID()) and sets table pointers from flags bits 0/1/4+/15
+0x00101928,Pfh,getFileName,function,walks the NUL-separated name table to entry n (assert theN >= 0 && theN <= getNumFile())
+0x001019f0,Pfh,findFile,function,linear search of the name table; returns the index or -1
+# Game file-request layer (TU without path strings, 0x1bf6fc..0x1bfcb4)
+0x001bf6fc,FileReq,init,function,req = {desc=0, fd=-1}; 34 callers set it up before a load
+0x001bf70c,FileReq,finish,function,closes the fd if still open; flag 1 frees the request
+0x001bf768,FileReq,doOpen,function,state 0: rxFileOpen(desc.path, 0x8001)
+0x001bf874,FileReq,doSeek,function,state 1: rxFileSeek(fd, desc.offset, whence 0/1/2)
+0x001bf79c,FileReq,doRead,function,state 2: rxFileRead(fd, desc.buffer, desc.size)
+0x001bf7f4,FileReq,doClose,function,state 3: rxFileClose(fd) when desc.close is set
+0x001bf8f8,FileReq,poll,function,rxFileSync(fd, 1): 0 when the async step has finished
+0x001bf954,FileReq,run,function,req.desc = desc; desc.state = 0; process(); 86 callers (blocking when the 3rd arg is 0)
+0x001bf994,FileReq,process,function,runs open/seek/read/close steps (state>>1 = 0..3); while busy it yields to the frame/sound tick
+0x001bfb9c,FileDesc,init,function,clears the 0x24-byte descriptor and sets fd = -1; 68 callers
+0x001bfbd0,,GetFileSize,function,rxFileOpen, rxFileSeek(fd, 0, SEEK_END) -> size, rxFileClose
+# mag/magLoader.cpp: CHARA.RPK super-archive
+0x00142830,MagLoader,mountChara,function,opens data/ch/CHARA.RPK once; for 20 category names (table 0x304b28: ACTION..CHAP12) findFile + reads the nested RTPK header and registers its entries
+0x001422f8,MagLoader,registerEntries,function,copies a nested archive's names/offsets/sizes into the flat character file table (ids < 0x5800)
+# RX middleware file API (rxfile)
+0x002456b0,,rxFileOpen,function,(path, mode); the [seek]/[read]/[write] debug wrappers and FileReq open with it; mode 0x8001 from the game
+0x00245720,,rxFileClose,function,called last by every rxfile debug wrapper and by FileReq::doClose
+0x00245860,,rxFileRead,function,"[read]: %s $%X (%dBytes)" wrapper calls it; FileReq::doRead
+0x00245a20,,rxFileWrite,function,"[write]: %s $%X (%dBytes)" wrapper calls it
+0x00245b68,,rxFileSeek,function,"[seek]: %s (%dBytes)" wrapper calls it; GetFileSize passes whence 2
+0x00245c00,,rxFileSync,function,(fd, 1) returns non-zero while the fd's request is busy; every caller loops on it
+0x00247bd8,,rxFileDeviceCall,function,UNVERIFIED role: builds <device prefix><cwd><path> and calls the current device's handler
+0x00248b98,,rxCdMakeDevPath,function,"cdrom0:" + rxCdNormalizePath(path)
+0x00248e98,,rxCdNormalizePath,function,prefix if relative, '/' -> '\', a-z -> A-Z, append suffix (ISO9660 form)
+0x002495f8,,rxCdIsoFind,function,reads the PVD path-table size/location (bytes 0x8084/0x808c) and resolves a path to LBA/size
+0x00249738,,rxCdIsoWalkPathTable,function,matches path components against ISO9660 path-table records (len,ext,lba,parent,name)
+0x00249908,,rxCdIsoFindInDir,function,scans a directory's records for the file name
+0x00249b88,,rxCdCachedRead,function,(dst, byte offset, len) through a sector cache; prints "rxfile : completed to read sector '%d'"
+0x002492f0,,rxCdReadSectors,function,the only sceCdRead caller: disk-type check, retries ("*** read error retry"), sceCdGetError
+# libkernl fileio (direct, used only by the now-loading screen)
+0x002646f0,,sceOpen,function,("cdrom0:\DATA\CMNTEX\LOAD_EU.BIN", 1=SCE_RDONLY); returns fd for sceRead/sceClose
+0x00264d38,,sceRead,function,(fd, buf, 0x20000) in the now-loading image loader
+0x00264980,,sceClose,function,closes the fd from sceOpen
+# system/sysNowLoading.cpp
+0x00206a58,NowLoading,init,function,allocates 1 MB image + 16 KB packet buffers; double-buffer setup; loads the image
+0x002064e4,NowLoading,loadImage,function,reads cdrom0:\DATA\CMNTEX\LOAD_EU.BIN (absent on this disc); uploads the CLUT at +0x10000 as 16x16 CT32 to CBP 0x1f40
+0x00206644,NowLoading,buildPacket,function,GIF packet: TEX0 0x2003e80e21311a40 (PSMT8 256x256, CBP 0x1f40); V range frame*0.25 .. (frame+1)*0.25
+0x00206978,NowLoading,draw,function,per-frame: sends the packet over DMA ch.2; advances the frame every 8 calls
+# Phase 3 follow-up: loaders behind the scene object at 0x725b40 (mag/magLoader.cpp, mag/magScene2.cpp, game/gamMan.cpp)
+0x0014277c,MagFileDir,init,function,clears the name directory embedded at +0x2c (map-unit loader, magSeqLoader) / +0xcc (MagLoader)
+0x0014279c,MagFileDir,free,function,frees the directory buffer, then re-inits it
+0x00142154,MagFileDir,build,function,(dir, count, names, offsets, sizes, base): copies an RTPK's tables into one buffer: sizes +0xc, offsets(+base) +0x10, name pointers +0x14, per-name bytes +0x18 (assert 0 < theNum && theNum <= c_maxNameBufSize)
+0x00142700,MagFileDir,find,function,name -> index in the directory (used by every by-name load)
+0x00142d6c,MagLoader,loadByIndex,function,reads size[i] bytes at offset[i] of the open CHARA.RPK (asserts theIndex >= 0, size > 0, offset > 0)
+0x00142edc,MagLoader,idToIndex,function,character id -> table index (asserts theID >= 0 && theID < ( 0x5800 ), cat >= 0, no < m_num_chara[ cat ])
+0x001430d8,MapUnitLoader,mount,function,opens data/bg/mapunit.bin (scene+0x224c) and reads its 8 KB header into a MagFileDir; the descriptor stays open
+0x001431d0,MapUnitLoader,loadByName,function,called with scene+0x224c by MagScene::loadMapUnit; MagFileDir::find, then reads fileSize bytes at fileOffset of the open mapunit.bin
+0x00143314,magSeqLoader,magSeqLoader,function,stores magSeqLoader::vtable at +0x154; FileReq::init; MagFileDir::init; m_bActive (+0x50) = 0
+0x00143354,magSeqLoader,~magSeqLoader,function,the class's only vtable slot: restores the vtable, frees the directory, FileReq::finish, deletes when (flags & 1)
+0x001433c8,magSeqLoader,reset,function,FileDesc::init + MagFileDir::init; called by the boot loader
+0x001433fc,magSeqLoader,open,function,mounts any RTPK path (data/<lang>/W%03d/AREA.RPK from GamMan::loadWorld): reads an 8 KB header, builds the directory, keeps the descriptor open, copies the path (<= 255) to +0x54, m_bActive = 1
+0x00143550,magSeqLoader,loadByName,function,asserts m_bActive; MagFileDir::find; reads the entry through the open descriptor
+0x00137458,MagScene,mountChara,function,UNVERIFIED class name (object 0x725b40, mag/magScene2.cpp): forwards to MagLoader::mountChara
+0x00137470,MagScene,mountMapUnit,function,forwards scene+0x224c to MapUnitLoader::mount
+0x00137488,MagScene,openSeqArchive,function,forwards scene+0x229c and the path to magSeqLoader::open
+0x001374a0,MagScene,loadSeqFile,function,magSeqLoader::loadByName on scene+0x229c (asserts pFileName and the result)
+0x0013751c,MagScene,bootLoad,function,loads data/PREMIERE.RPK (CMNTEX.RPK + fnt/fnt18EU.bin, fnt/fnt20EU.bin), then mounts mapunit.bin and CHARA.RPK and resets the magSeqLoader
+0x00138804,MagScene,loadMapUnit,function,MapUnitLoader::loadByName(scene+0x224c, pFileName)
+0x00138db8,MagScene,loadCharaByName,function,MagFileDir::find(theCharaName) -> MagLoader::loadByIndex
+0x001390c4,MagScene,loadCharaById,function,MagLoader::idToIndex(theID) -> MagLoader::loadByIndex
+0x001c34ec,GamMan,loadWorld,function,game/gamMan.cpp: magSeqLoader::open(data/<lang>/W%03d/AREA.RPK), then loads data/<lang>/W%03d/W000.WRD whole and unpacks entries 0-4; skipped for world 99 / -1
+0x001c5c08,GamMan,loadArea,function,snprintf(A%03d.ARA) -> MagScene::loadSeqFile -> Pfh::attach of the nested area archive
+0x0020fbe8,,SetLangDir,function,copies one of five language directory names into the buffer at 0x2ef5a0 (5 branches); called from the language-select code
+0x0020fca8,,GetLangDir,function,returns the buffer at 0x2ef5a0 used as %s in data/%s/... paths
+0x00194298,MnuLoadQueue,update,function,per-frame pump of the menu asset queue (MnuMap/MnuPBook/MnuDiary slot 5): finds the entry in a held RTPK header, FileReq::run async (sync if flag 0x10), then post-processes by type (4 = TIM2 texture via 0x116dac)
+0x001bf978,FileReq,resume,function,req.desc = desc; process(async): the polling call of the async loaders
+0x001fe504,TskBGLoad,startRead,function,fills the task's FileDesc (path, offset, buffer, size, close) and runs it async. DEAD in retail: TskBGLoadArea/Map are never constructed
+0x001fe5bc,TskBGLoadArea,TskBGLoadArea,function,constructor; no callers and no stored pointers anywhere (dead code)
+0x001fe8c4,TskBGLoadMap,TskBGLoadMap,function,constructor; no callers and no stored pointers anywhere (dead code)
+0x001fe630,TskBGLoadArea,startLoad,function,vtable slot 7: copies the path (0x100) and requests the 2 KB header; exec then loads the whole archive
+0x001fe928,TskBGLoadMap,startLoad,function,vtable slot 7: requests the header of *(0x2eec8c) = data/bg/mapunit.bin; exec then allocates total and reads it all
+0x001fe0ac,NagaChunk,saveToHost,function,debug, unreferenced: sceOpen(host:%s, 0x602) + sceWrite of the chunk
+0x001fe1d8,NagaChunk,loadFromHost,function,debug, unreferenced: sceOpen(host:%s, 1), sceLseek(fd,0,2) for the size, allocate, sceRead
+0x00264af8,,sceLseek,function,(fd, 0, 2) returns the file size in NagaChunk::loadFromHost, then (fd, 0, 0) rewinds
+0x00264fa8,,sceWrite,function,writes the chunk after sceOpen(..., 0x602) in NagaChunk::saveToHost
+0x002eec8c,,g_mapUnitPath,label,pointer to data/bg/mapunit.bin (0x326000); read only by TskBGLoadMap

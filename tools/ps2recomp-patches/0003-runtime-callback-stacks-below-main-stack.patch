@@ -1,0 +1,58 @@
+Subject: ps2xRuntime: keep interrupt/callback stacks out of the main thread stack
+
+reserveAsyncCallbackStack carves 0x4000-byte invocation stacks downward from the top of RAM, and
+SetupThread returns sp = stack + size, which for Rule of Rose (crt0 SetupThread(stack 0x1f80000,
+size 0x80000)) is also the top of RAM. The INTC 11 (TIMER2) handler installed by _InitSys then ran
+on main's stack and overwrote saved return addresses (main returned to pc 0 inside the heap fill
+at 0x1004e8). SetupThread now moves the callback stack top below the thread's stack.
+
+diff --git a/ps2xRuntime/include/ps2_runtime.h b/ps2xRuntime/include/ps2_runtime.h
+index 4b9242c..9349d6f 100644
+--- a/ps2xRuntime/include/ps2_runtime.h
++++ b/ps2xRuntime/include/ps2_runtime.h
+@@ -384,6 +384,8 @@ public:
+     uint32_t guestHeapEnd() const;
+     uint32_t guestHeapLimit() const;
+     uint32_t reserveAsyncCallbackStack(uint32_t size, uint32_t alignment = 16u);
++    // Keeps callback/interrupt stacks out of a guest thread stack placed in their region (e.g. at the top of RAM).
++    void excludeAsyncCallbackStackRange(uint32_t low, uint32_t high);
+ 
+     void drainCompletedDmacHandlers(uint8_t *rdram);
+ 
+diff --git a/ps2xRuntime/src/lib/Kernel/Syscalls/System.cpp b/ps2xRuntime/src/lib/Kernel/Syscalls/System.cpp
+index 9614016..aea3da0 100644
+--- a/ps2xRuntime/src/lib/Kernel/Syscalls/System.cpp
++++ b/ps2xRuntime/src/lib/Kernel/Syscalls/System.cpp
+@@ -531,6 +531,11 @@ namespace ps2_syscalls
+         }
+ 
+         scheduler.setupCurrentThread(initialStack, stackSize, getRegU32(ctx, 28));
++        // The main stack often sits at the top of RAM, where interrupt invocation stacks are carved from.
++        if (stackSize != 0u && sp > stackSize)
++        {
++            runtime->excludeAsyncCallbackStackRange(sp - stackSize, sp);
++        }
+         setReturnU32(ctx, sp);
+     }
+ 
+diff --git a/ps2xRuntime/src/lib/ps2_runtime.cpp b/ps2xRuntime/src/lib/ps2_runtime.cpp
+index 45cb9d2..74301e2 100644
+--- a/ps2xRuntime/src/lib/ps2_runtime.cpp
++++ b/ps2xRuntime/src/lib/ps2_runtime.cpp
+@@ -2013,6 +2013,16 @@ uint32_t PS2Runtime::reserveAsyncCallbackStack(uint32_t size, uint32_t alignment
+     return top - 0x10u;
+ }
+ 
++void PS2Runtime::excludeAsyncCallbackStackRange(uint32_t low, uint32_t high)
++{
++    std::lock_guard<std::mutex> lock(m_asyncCallbackStackMutex);
++    // Stacks are carved downward from the top: a range overlapping the top moves the top below it.
++    if (low < m_asyncCallbackStackTop && high > m_asyncCallbackStackFloor)
++    {
++        m_asyncCallbackStackTop = std::max(low & ~0xFu, m_asyncCallbackStackFloor);
++    }
++}
++
+ uint8_t PS2Runtime::Load8(uint8_t *rdram, R5900Context *ctx, uint32_t vaddr)
+ {
+     try

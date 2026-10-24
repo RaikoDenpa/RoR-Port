@@ -11,6 +11,7 @@
 
 #include <chrono>
 #include <cstdlib>
+#include <cstring>
 #include <thread>
 
 namespace
@@ -166,9 +167,11 @@ void ror_wait_vsync_swap(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     // Host time per frame: game work (between calls) and this function (waiting), averaged over the log interval.
     static Clock::time_point s_leave{};
     static double s_workMs = 0, s_waitMs = 0;
+    static uint64_t s_gsNs = 0;
     const auto enter = Clock::now();
     if (s_leave != Clock::time_point{})
         s_workMs += std::chrono::duration<double, std::milli>(enter - s_leave).count();
+    ror::gsFrameMark(runtime, g_frames, false);
     const uint32_t self = ror::arg(ctx, 0);
     if (ror::rd32(rdram, kMovieObject) != 0)
         ror::call(rdram, ctx, runtime, kMovieWait, {0});
@@ -198,9 +201,22 @@ void ror_wait_vsync_swap(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     if (g_frames == 1 || g_frames % 250 == 0)
     {
         const double n = g_frames == 1 ? 1.0 : 250.0;
-        ror::log("frame %llu done (VBlank %u; per frame: game %.1f ms, vsync wait %.1f ms)",
-                 static_cast<unsigned long long>(g_frames), g_vblanks, s_workMs / n, s_waitMs / n);
+        const uint64_t gsNs = ror::gsBackendNanos();
+        ror::log("frame %llu done (VBlank %u; per frame: game %.1f ms incl. GS raster backend %.1f ms, vsync wait %.1f ms)",
+                 static_cast<unsigned long long>(g_frames), g_vblanks, s_workMs / n, (gsNs - s_gsNs) / 1e6 / n, s_waitMs / n);
         s_workMs = s_waitMs = 0;
+        s_gsNs = gsNs;
+    }
+    ror::gsFrameMark(runtime, g_frames, true);
+    static const uint64_t s_profileFrame = []
+    {
+        const char *env = std::getenv("ROR_PROFILE"); // "FRAME:SECONDS"
+        return env ? std::strtoull(env, nullptr, 10) : 0ull;
+    }();
+    if (s_profileFrame && g_frames == s_profileFrame)
+    {
+        const char *colon = std::strchr(std::getenv("ROR_PROFILE"), ':');
+        ror::profileStart(colon ? std::atof(colon + 1) : 10.0, "profile.tsv");
     }
     if (maxFrames() && g_frames >= maxFrames())
     {

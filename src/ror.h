@@ -45,4 +45,12 @@ namespace ror
 
     // Frames completed (MagSystem::wait_vsync_swap calls).
     uint64_t frame();
+
+    // GS diagnostics (ror_gs.cpp): tracing raster backend, host time spent in it, per-frame trace window.
+    void gsInstall(PS2Runtime &runtime);
+    uint64_t gsBackendNanos();
+    void gsFrameMark(PS2Runtime *runtime, uint64_t frame, bool leaving);
+
+    // Host sampling profiler (ror_profile_win32.cpp).
+    void profileStart(double seconds, const char *outPath);
 }

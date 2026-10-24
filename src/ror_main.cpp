@@ -184,6 +184,7 @@ namespace
         // the top 256 KB below the runtime's hard heap limit 0x1F00000 instead (patch 0004); main's stack is
         // 0x1F80000-0x2000000 and interrupt stacks sit between (patch 0003).
         runtime.reserveGuestHeapArena(0x1EC0000u, 0x1F00000u);
+        ror::gsInstall(runtime);
         size_t ok = 0;
         for (size_t i = 0; i < kCount; ++i)
         {

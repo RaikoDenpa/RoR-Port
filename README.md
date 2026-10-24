@@ -59,7 +59,7 @@ Create an ISO image from **your own** disc using a PC DVD drive:
 
 ### 2. Download the Port
 
-Grab the latest build from [Releases](https://github.com/YOURNAME/REPONAME/releases) and unzip it anywhere.
+Grab the latest build from [Releases](https://github.com/raikodenpa/RoR-Port/releases) and unzip it anywhere.
 
 ### 3. Extract Game Data
 
@@ -82,7 +82,7 @@ None Yet
 
 Binaries are written to `build/bin/`.
 
-See the [issue tracker](https://github.com/YOURNAME/REPONAME/issues) for the full list.
+See the [issue tracker](https://github.com/raikodenpa/RoR-Port/issues) for the full list.
 
 ## FAQ
 

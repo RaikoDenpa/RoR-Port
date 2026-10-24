@@ -1,7 +1,7 @@
 # Setting up a fresh machine
 
 Windows. Everything below the repo root that comes from the disc or from builds is gitignored (`disc/`, `ghidra/`,
-`extracted/`, `tools/bin/`, `build/`); only code, notes and tools are in git. Never add game data (CLAUDE.md).
+`extracted/`, `tools/bin/`, `build/`); only code, notes and tools are in git. Never add game data
 
 ## 1. Clone
 

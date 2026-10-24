@@ -58,7 +58,6 @@ SLES_542.18 ──► Ghidra analysis ──► function list, names, jump table
 ## Repository layout
 
 ```
-CLAUDE.md                 project rules and workflow
 notes/                    research: one file per subsystem (start with engine.md and port.md)
   formats/                file formats: RTPK archives, I3D models, TIM2, PSS, STR, XVAB, ELFR scripts
 src/                      the port: game overrides at each seam (C++)

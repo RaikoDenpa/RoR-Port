@@ -1,0 +1,38 @@
+/disc/
+*.iso
+*.ISO
+*.elf
+*.ELF
+SLES_*
+SLUS_*
+SCES_*
+*.irx
+*.IRX
+*.IMG
+
+# Ghidra install, projects and local state
+/ghidra/
+*.gpr
+*.rep/
+*.lock
+*.lock~
+
+# Extracted / converted assets produced by tools/
+/extracted/
+/out/
+# Game text extracted by tools/elfr.py --strings belongs in extracted/, never in notes/
+/notes/script-strings.tsv
+
+# Third-party binaries (portable ffmpeg etc.)
+/tools/bin/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Editors / OS
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

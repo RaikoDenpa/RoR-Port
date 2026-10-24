@@ -1,67 +1,136 @@
-# Setting up a fresh machine
+# Rule of Rose — PC Port
 
-Windows. Everything below the repo root that comes from the disc or from builds is gitignored (`disc/`, `ghidra/`,
-`extracted/`, `tools/bin/`, `build/`); only code, notes and tools are in git. Never add game data
+A native PC port of *Rule of Rose* (PlayStation 2, Punchline, 2006), built by reverse engineering the
+PAL release (`SLES_542.18`) and statically recompiling it to C++.
 
-## 1. Clone
+> **Private, personal, non-commercial project.** This repository contains **no game data**: no disc image,
+> executable, assets, or text extracted from the game. Everything here is original code, tools and research
+> notes. Running the port requires your own legally dumped copy of the game.
 
-```
-git clone --recurse-submodules https://github.com/<you>/buhbuh.git ruleofrosedecomp
-cd ruleofrosedecomp
-```
+---
 
-An existing clone without the submodule: `git submodule update --init`. `tools/PS2Recomp` is pinned to a public
-upstream commit (https://github.com/ran-j/PS2Recomp); our changes to it are the patches in `tools/ps2recomp-patches/`.
+## Status
 
-## 2. Tools
-
-| Tool | Version used | Notes |
+| # | Milestone | Status |
 |---|---|---|
-| Git | 2.53 | with Git Bash |
-| Python 3 | 3.14 (`py` launcher) | standard library only |
-| JDK | 26.0.1 at `C:\Program Files\Java\jdk-26.0.1` | Ghidra 12 needs JDK 21+. Another location: set `JAVA_HOME` (the scripts use it when set) |
-| Ghidra | 12.1.4 | unzip **into the repo** as `ghidra/` (so `ghidra/support/analyzeHeadless.bat` exists); projects live in `ghidra/projects/` |
-| ghidra-emotionengine-reloaded | v2.1.38 (build for Ghidra 12.1.4) | Emotion Engine processor (`r5900:LE:32:default`); install via Ghidra's File → Install Extensions or unzip into `ghidra/Ghidra/Extensions/` |
-| Visual Studio | 18 2026, "Desktop development with C++" | VS 2022 also has C++20: `set ROR_CMAKE_GENERATOR=Visual Studio 17 2022` before `build.py` |
-| CMake | 4.3 (3.20+) | on PATH |
-| ffmpeg (portable) | any recent build | optional, for listening to/viewing converted audio and movies; unzip to `tools/bin/ffmpeg/` (`tools/bin/ffmpeg/bin/ffmpeg.exe`) |
-| GitHub CLI | | only to create or push the repo |
+| 1 | Recompiled game builds | ✅ |
+| 2 | Boots to `main` | ✅ |
+| 3 | Main loop runs, first frames drawn | ✅ |
+| 4 | Title screen with input | 🟡 Language select, publisher logos, disclaimer and Title menu reached; colours wrong (VIF1 upload bug, fix pending); attract-mode movie stalls on a placeholder |
+| 5 | First area: Jennifer on screen | ⬜ |
+| 6 | Playable: walking, menus, Brown, saving | ⬜ |
+| 7 | Full playthrough | ⬜ |
 
-## 3. Your disc dump
+**Current focus:** fixing the VIF1 upload bug and the display height, getting past the title into a new
+game, and integrating PCSX2's GS renderer. The current software GS is about 96% of frame time, so the port
+runs at roughly half speed. See [`notes/renderer.md`](notes/renderer.md).
 
-Put your own dump of Rule of Rose (PAL, SLES-54218) at `disc/Rule of Rose.iso`, then:
+## How it works
 
-```
-py tools\iso9660.py "disc\Rule of Rose.iso" --extract extracted\disc
-copy extracted\disc\SLES_542.18 disc\
-xcopy /e /i extracted\disc\MODULES disc\MODULES
-```
-
-`disc/SLES_542.18` is what Ghidra and the recompiler read; `extracted/disc/` is the disc root the port reads its
-files from at run time.
-
-## 4. Ghidra project
+The game's MIPS R5900 code is **statically recompiled** into C++ with
+[PS2Recomp](https://github.com/ran-j/PS2Recomp). Only the points where the game touches PS2 hardware or
+system software are replaced with native PC code. All game logic, the event-script interpreter and the
+3D library run unchanged, so behaviour matches the original.
 
 ```
-powershell -ExecutionPolicy Bypass -File tools\ghidra_scripts\run_all.ps1 -Fresh
+SLES_542.18 ──► Ghidra analysis ──► function list, names, jump tables
+                                          │
+                                          ▼
+                     tools/port/gen_config.py ──► PS2Recomp ──► C++ (≈8,100 functions)
+                                                                   │
+              src/ (seam overrides) + PS2Recomp runtime + patches ─┴─► ps2EntryRunner.exe
+                                                                   │
+                                   your own disc dump (read at runtime)
 ```
 
-Imports `disc\SLES_542.18` with the EE processor, runs auto-analysis, then every naming script (classes, syscalls,
-SDK strings, jump tables, function pointers, the CSV names, source files). Takes a while; reports go to a temp folder.
-Optional, for the script VM notes: `tools\ghidra\import_seq.ps1` (script modules).
+### Seams: where the PS2 is replaced
 
-## 5. Build and run the port
+| Seam | Replaced at | State |
+|---|---|---|
+| File I/O | `rxFile*` API + libkernl `sceOpen`/`sceRead` | ✅ host files from your disc dump |
+| Threads / vsync | RX thread layer, `MagSystem::wait_vsync_swap` | ✅ single-threaded, 25 Hz host frame loop |
+| Input | libpad2/libdbc raw pad data | ✅ keyboard + gamepad (`config/pad.ini`) |
+| Rendering | VIF1 → GS | 🟡 PS2Recomp's software GS; PCSX2 GS planned |
+| Movies | `TskMovie` / rxmpeg | ⬜ placeholder (skipped); ffmpeg planned |
+| Sound | rxsnd client API (26 functions) | ⬜ placeholder (silent) |
+| Memory card | libmc API | ⬜ placeholder (empty card); host files planned |
+
+## Repository layout
 
 ```
-py tools\port\build.py setup     # worktree of tools/PS2Recomp in extracted/ps2recomp/tree + our patches
-py tools\port\build.py export    # Ghidra project -> extracted/ps2recomp/ghidra (functions, switch tables)
-py tools\port\build.py config    # PS2Recomp config, function list, override bindings (with checks)
-py tools\port\build.py recomp    # builds ps2_recomp, recompiles the ELF to C++, checks the output
-py tools\port\build.py build     # CMake + MSVC: ps2EntryRunner.exe (first build ~17 min)
-py tools\port\build.py run --frames 300 --seconds 120
+CLAUDE.md                 project rules and workflow
+notes/                    research: one file per subsystem (start with engine.md and port.md)
+  formats/                file formats: RTPK archives, I3D models, TIM2, PSS, STR, XVAB, ELFR scripts
+src/                      the port: game overrides at each seam (C++)
+config/pad.ini            input mapping
+tools/
+  port/                   config generator, build/run driver, profiler and GS trace readers
+  ps2recomp-patches/      numbered patch series applied to PS2Recomp
+  ghidra_scripts/         reproducible naming pipeline (run_all.ps1 rebuilds every name from a fresh import)
+  *.py                    asset tools: iso9660, rtpk, tim2png, i3d2obj, str2wav, xvab, pss_audio, elfr, vudis …
+  PS2Recomp/              submodule, pinned commit
 ```
 
-After `export`, `py tools\port\build.py all` runs setup, config, recomp and build. The first configure downloads
-PS2Recomp's dependencies (raylib, toml11, fmt, ELFIO, ...) into `tools/PS2Recomp/out/build/_deps` (ignored by the
-submodule); later builds run offline. Which step to rerun after a change, run options (`--pad-script`, `--env`) and the
-logs: CLAUDE.md "Build and run". Pad mapping: `config/pad.ini`.
+Not tracked (gitignored): `disc/`, `extracted/` (your dump, extracted assets, generated C++, builds, logs),
+`ghidra/` (Ghidra projects).
+
+## Research notes
+
+The analysis behind the port lives in [`notes/`](notes/). Some highlights:
+
+| File | Contents |
+|---|---|
+| [`engine.md`](notes/engine.md) | one frame from `main` to the GS, state machine, render path, threads |
+| [`classes.md`](notes/classes.md) | 290 C++ classes rebuilt from RTTI and vtables |
+| [`script-vm.md`](notes/script-vm.md) | the event-script interpreter and its 41 native calls |
+| [`file-system.md`](notes/file-system.md) | loading path from request to disc read, disc coverage |
+| [`port-strategy.md`](notes/port-strategy.md) | why recompilation, the seams, milestones |
+| [`renderer.md`](notes/renderer.md) | frame profile, GS diagnosis, renderer options |
+| [`glossary.md`](notes/glossary.md) | naming conventions (`dog/` is the 3D engine, `Bwn` is Brown) |
+
+## Building
+
+Full setup for a new machine is in [`SETUP.md`](SETUP.md). In short:
+
+**Requirements:** Windows, Visual Studio 2026 (MSVC) + CMake, Python 3, Ghidra with the
+[Emotion Engine processor module](https://github.com/chaoticgd/ghidra-emotionengine-reloaded),
+and your own dump of the PAL disc (`SLES_542.18`).
+
+```powershell
+git clone --recurse-submodules <this repo>
+# 1. Extract your disc dump into extracted/disc/  (python tools/iso9660.py)
+# 2. Rebuild the Ghidra project and names
+tools/ghidra_scripts/run_all.ps1 -Fresh
+# 3. Generate config, recompile, build, run
+python tools/port/build.py setup
+python tools/port/build.py recomp
+python tools/port/build.py build
+python tools/port/build.py run
+```
+
+The first full build takes about 17 minutes. Rebuilding after a change to one function takes seconds.
+
+### Useful run options
+
+| Option | Does |
+|---|---|
+| `build.py run --frames N` | stop after N frames |
+| `build.py run --pad-script "100+4:cross"` | press buttons at given frames (unattended runs) |
+| `--env ROR_PROFILE=FRAME:SECONDS` | sampling profile → `tools/port/profile.py` |
+| `--env ROR_GS_TRACE=FRAME --env ROR_GS_VRAM=1` | dump one frame's GS draws and memory → `tools/port/gs_trace.py`, `gs_vram.py` |
+
+Logs go to `extracted/ps2recomp/run/` (`ror.log` includes the game's own script debug prints).
+
+## Project rules
+
+- **Never commit game data.** Nothing from the disc, extracted assets or game-derived text goes into git.
+- Every finding cites evidence (an address, a function, a tool result or a runtime observation). Guesses are
+  marked `UNVERIFIED`.
+- Never hand-edit generated C++. Fixes go into the config generator, `src/` overrides, or the patch series.
+
+## Licence
+
+This project builds on [PS2Recomp](https://github.com/ran-j/PS2Recomp) (GPL-3.0), and the planned renderer
+uses [PCSX2](https://github.com/PCSX2/pcsx2) (GPL-3.0), so the port as a whole falls under GPL-3.0.
+*Rule of Rose* is © Sony Computer Entertainment / Punchline. This project is not affiliated with or endorsed
+by them, and it does not include or distribute any of their content.

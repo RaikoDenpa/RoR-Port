@@ -16,12 +16,12 @@ PAL release (`SLES_542.18`) and statically recompiling it to C++.
 | 1 | Recompiled game builds | ✅ |
 | 2 | Boots to `main` | ✅ |
 | 3 | Main loop runs, first frames drawn | ✅ |
-| 4 | Title screen with input | 🟡 Language select, publisher logos, disclaimer and Title menu reached; colours wrong (VIF1 upload bug, fix pending); attract-mode movie stalls on a placeholder |
+| 4 | Title screen with input | 🟡 Language select, publisher logos, disclaimer and Title menu reached; attract-mode movie stalls on a placeholder |
 | 5 | First area: Jennifer on screen | ⬜ |
 | 6 | Playable: walking, menus, Brown, saving | ⬜ |
 | 7 | Full playthrough | ⬜ |
 
-**Current focus:** fixing the VIF1 upload bug and the display height, getting past the title into a new
+**Current focus:** getting past the title into a new
 game, and integrating PCSX2's GS renderer. The current software GS is about 96% of frame time, so the port
 runs at roughly half speed. See [`notes/renderer.md`](notes/renderer.md).
 

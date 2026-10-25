@@ -1,6 +1,10 @@
 // Placeholders that always report "finished", until the real movie, sound and memory-card seams exist
 // (notes/port-strategy.md 3; the pad is real now, ror_pad.cpp). Each keeps the contract its callers check:
-//   TskMovie::exec 0x1f5b38   nonzero ends the task (Tasks_run 0x1e8e70); TskMovie::term then restores vsync 2
+//   rxmpeg open 0x18313c      every movie goes through the player 0x7ddfc0: TskMovie (through 0x7aa738) and the title
+//                             attract mode 0x1aaae4, which bypasses TskMovie. Its open must return >= 0 (0x181c3c
+//                             retries until then), then ready 0x29af7c (0x1832cc) and finished 0x29af58 (0x1837c0)
+//                             are what both poll. TskMovie::exec itself runs: its start/close 0x193150/0x19319c push
+//                             and pop a MagSystem submode (0x1328b0/0x1328f0) that its term relies on
 //   rxsnd client              ids in range (voices < 0x40 per 0x23e150, ADPCM < 0x30 per 0x240080, banks < 0x100
 //                             per 0x23c648); sndman 0x180900 closes a stream once status bit 0x4 is set
 //   libmc                     each call is accepted (0) and sceMcSync 0x24fb98 then returns 1 with the result;
@@ -11,11 +15,18 @@
 
 // ---- movies ----
 
-void ror_TskMovie_exec(uint8_t *rdram, R5900Context *ctx, PS2Runtime *)
+void ror_rxmpeg_open(uint8_t *rdram, R5900Context *ctx, PS2Runtime *)
 {
-    // The task object is a0 after the vtable this-adjust; the constructor 0x1f5978 copies the name to +0x10.
-    ror::log("movie %s skipped (placeholder)", ror::str(rdram, ror::arg(ctx, 0) + 0x10, 0x40).c_str());
-    ror::ret(ctx, 1);
+    // The state the per-frame update 0x1832d8 leaves at the end of a stream: prebuffered (ready), past the last
+    // 0x2800 bytes (0x29af94, the title's fade cue in 0x181e50), no data left, finished. The stream handle stays -1,
+    // so the update and start 0x18324c do nothing, and no decode worker (0x182824) is queued.
+    ror::log("movie movie/%s skipped (rxmpeg placeholder)", ror::str(rdram, ror::arg(ctx, 0), 0x40).c_str());
+    ror::wr32(rdram, 0x29af44, 0xffffffffu);  // stream handle
+    ror::wr32(rdram, 0x29af48, 0);           // bytes left
+    ror::wr32(rdram, 0x29af58, 1);           // finished
+    ror::wr32(rdram, 0x29af7c, 1);           // ready
+    ror::wr32(rdram, 0x29af94, 1);           // end reached
+    ror::ret(ctx, 0);
 }
 
 // ---- rxsnd ----

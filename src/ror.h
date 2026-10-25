@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <initializer_list>
 #include <string>
+#include <vector>
 
 namespace ror
 {
@@ -50,6 +51,15 @@ namespace ror
     void gsInstall(PS2Runtime &runtime);
     uint64_t gsBackendNanos();
     void gsFrameMark(PS2Runtime *runtime, uint64_t frame, bool leaving);
+    // The 4 MB of GS local memory, after the backend's pending work.
+    void gsSnapshotVram(std::vector<uint8_t> &out);
+
+    // PCSX2 GS dumps (ror_gsdump.cpp): ROR_GSDUMP=F[:N],... From the frame mark (end of wait_vsync_swap), each VBlank
+    // and each GS->host read.
+    void gsDumpInstall(PS2Runtime &runtime);
+    void gsDumpFrameMark(uint64_t frame);
+    void gsDumpVsync();
+    void gsDumpReadFifo(uint32_t bytes);
 
     // Host sampling profiler (ror_profile_win32.cpp).
     void profileStart(double seconds, const char *outPath);

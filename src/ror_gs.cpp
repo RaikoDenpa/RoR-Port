@@ -4,9 +4,13 @@
 // ROR_GS_TRACE_OUT (default gs_frame_N.tsv). A "frame" is the span from the end of MagSystem::wait_vsync_swap N to
 // the start of N+1: kick_dma sends frame N's chain there (MagSystem::frame 0x11848c), followed by frame N+1's
 // immediate texture uploads. tools/port/gs_trace.py summarises the file.
+// ROR_SCREENSHOT=F[,F...] saves the presented frame (what the window shows) at the end of wait_vsync_swap F as
+// screen_F.png.
 #include "ror.h"
 
 #include "runtime/gs/gs_cpu_backend.h"
+
+#include "raylib.h"
 
 #include <algorithm>
 #include <atomic>
@@ -27,6 +31,7 @@ namespace
     FILE *g_out = nullptr;
     uint64_t g_traceFrame = 0;
     uint32_t g_draws = 0;
+    std::vector<uint64_t> g_shotFrames;
 
     const char *primName(GSPrimType t)
     {
@@ -144,7 +149,12 @@ namespace
             return ok;
         }
 
-        uint32_t ConsumeLocalToHostBytes(uint8_t *dst, uint32_t maxBytes) override { return m_inner->ConsumeLocalToHostBytes(dst, maxBytes); }
+        uint32_t ConsumeLocalToHostBytes(uint8_t *dst, uint32_t maxBytes) override
+        {
+            const uint32_t n = m_inner->ConsumeLocalToHostBytes(dst, maxBytes);
+            ror::gsDumpReadFifo(n);
+            return n;
+        }
         uint32_t ReadVram(uint32_t psm, uint32_t base, uint32_t bw, uint32_t x, uint32_t y) const override
         {
             return m_inner->ReadVram(psm, base, bw, x, y);
@@ -225,6 +235,41 @@ namespace
         dispfb("dispfb2", r.dispfb2);
         std::fprintf(g_out, "\n");
     }
+
+    // The frame the render thread latched last (GS::latchHostPresentationFrame, once per vsync tick), opaque.
+    void screenshot(PS2Runtime *runtime, uint64_t frame)
+    {
+        std::vector<uint8_t> pixels;
+        uint32_t w = 0, h = 0;
+        if (!runtime->gs().copyLatchedHostPresentationFrame(pixels, w, h) || !w || !h)
+        {
+            ror::log("screenshot: no presented frame at frame %llu", static_cast<unsigned long long>(frame));
+            return;
+        }
+        for (size_t i = 3; i < pixels.size(); i += 4)
+            pixels[i] = 0xff;
+        const std::string path = "screen_" + std::to_string(frame) + ".png";
+        Image image{pixels.data(), static_cast<int>(w), static_cast<int>(h), 1, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8};
+        const bool ok = ExportImage(image, path.c_str());
+        ror::log("screenshot: frame %llu %ux%u -> %s%s", static_cast<unsigned long long>(frame), w, h, path.c_str(),
+                 ok ? "" : " (failed)");
+    }
+}
+
+// sceGsPutDrawEnv 0x25b588 (libgraph): sends the packet at a0, a GIFtag and its NLOOP A+D pairs, to the GS by GIF DMA in
+// normal mode with QWC = NLOOP + 1 (the original writes D2_QWC/MADR/CHCR 0x101). PS2Recomp's runtime stub applies 8
+// pairs read from a0 itself: it takes the GIFtag for a pair and drops the rest. gs_swap_env 0x25b908 sends the
+// double-buffer packets at +0x50 / +0x140 (15 quadwords apart) every frame: the draw environment and the frame's clear.
+void ror_sceGsPutDrawEnv(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+{
+    const uint32_t tag = ror::arg(ctx, 0);
+    const uint32_t qwc = (ror::rd32(rdram, tag) & 0x7fff) + 1;
+    static int s_logged = 0;
+    if (s_logged < 3 && ++s_logged)
+        ror::log("sceGsPutDrawEnv: packet %08x, %u quadwords", tag, qwc);
+    if (const uint8_t *p = ror::ptr(rdram, tag, qwc * 16))
+        runtime->memory().submitGifPacket(GifPathId::Path3, p, qwc * 16);
+    ror::ret(ctx, 0);
 }
 
 namespace ror
@@ -233,17 +278,64 @@ namespace ror
     {
         const char *f = std::getenv("ROR_GS_TRACE");
         g_traceFrame = f && *f ? std::strtoull(f, nullptr, 10) : 0;
+        for (const char *p = std::getenv("ROR_SCREENSHOT"); p && *p;)
+        {
+            char *end = nullptr;
+            const uint64_t n = std::strtoull(p, &end, 10);
+            if (end == p)
+                break;
+            g_shotFrames.push_back(n);
+            p = *end == ',' ? end + 1 : end;
+        }
         auto backend = std::make_unique<TracingBackend>(std::make_unique<GSCpuBackend>());
         g_backend = backend.get();
         runtime.gs().setRasterBackend(std::move(backend));
+        ror::gsDumpInstall(runtime);
     }
 
     uint64_t gsBackendNanos() { return g_backendNs.load(std::memory_order_relaxed); }
+
+    void gsSnapshotVram(std::vector<uint8_t> &out)
+    {
+        out.clear();
+        if (!g_backend)
+            return;
+        g_backend->Flush();
+        g_backend->Sync(GSSyncReason::DebugReadback);
+        g_backend->SnapshotVram(out);
+    }
 
     // Called by wait_vsync_swap on entry (leaving = false) and exit (leaving = true) with the frame count.
     void gsFrameMark(PS2Runtime *runtime, uint64_t frame, bool leaving)
     {
         g_gameThread = std::this_thread::get_id();
+        if (leaving && std::find(g_shotFrames.begin(), g_shotFrames.end(), frame) != g_shotFrames.end())
+            screenshot(runtime, frame);
+        if (leaving)
+            ror::gsDumpFrameMark(frame);
+        // ROR_PEEK=F:ADDR:N[,…]: N guest words at ADDR (hex) after frame F, to ror.log.
+        for (const char *p = leaving ? std::getenv("ROR_PEEK") : nullptr; p && *p;)
+        {
+            char *end = nullptr;
+            const uint64_t f = std::strtoull(p, &end, 10);
+            const uint32_t addr = *end == ':' ? static_cast<uint32_t>(std::strtoul(end + 1, &end, 16)) : 0;
+            const uint32_t n = *end == ':' ? static_cast<uint32_t>(std::strtoul(end + 1, &end, 10)) : 1;
+            if (f == frame)
+                for (uint32_t i = 0; i < n; i += 4)
+                {
+                    std::string line;
+                    for (uint32_t j = i; j < n && j < i + 4; ++j)
+                    {
+                        char w[12];
+                        std::snprintf(w, sizeof(w), " %08x", ror::rd32(runtime->memory().getRDRAM(), addr + j * 4));
+                        line += w;
+                    }
+                    ror::log("peek %08x:%s", addr + i * 4, line.c_str());
+                }
+            if (end == p || *end != ',')
+                break;
+            p = end + 1;
+        }
         if (!g_traceFrame)
             return;
         if (leaving && frame == g_traceFrame && !g_out)

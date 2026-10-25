@@ -64,6 +64,28 @@ namespace
     constexpr size_t kTraceCount = sizeof(g_traces) / sizeof(g_traces[0]) - 1;
     constexpr int kTraceLimit = 20; // calls logged per traced function
 
+    // ROR_TRACE_FRAMES=A-B: log every traced call made in frames A..B instead of each function's first kTraceLimit.
+    struct TraceWindow
+    {
+        bool set = false;
+        uint64_t from = 0, to = 0;
+        TraceWindow()
+        {
+            const char *e = std::getenv("ROR_TRACE_FRAMES");
+            unsigned long long a = 0, b = 0;
+            if (e && std::sscanf(e, "%llu-%llu", &a, &b) == 2)
+                set = true, from = a, to = b;
+        }
+        bool show(int &calls) const
+        {
+            if (!set)
+                return calls++ < kTraceLimit;
+            const uint64_t f = ror::frame();
+            return f >= from && f <= to;
+        }
+    };
+    const TraceWindow g_traceWindow;
+
     // Last guest context seen by an override, and a counter of override calls, for the watchdog.
     std::atomic<R5900Context *> g_ctx{nullptr};
     std::atomic<uint64_t> g_calls{0};
@@ -157,7 +179,7 @@ namespace
     {
         Trace &t = g_traces[I];
         const uint32_t ra = getRegU32(ctx, 31);
-        const bool show = t.calls++ < kTraceLimit;
+        const bool show = g_traceWindow.show(t.calls);
         if (show)
             ror::log("trace %08x %s(%08x, %08x, %08x, %08x) from %08x", t.addr, t.name, ror::arg(ctx, 0), ror::arg(ctx, 1),
                      ror::arg(ctx, 2), ror::arg(ctx, 3), ra);

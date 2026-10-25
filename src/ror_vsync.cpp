@@ -40,6 +40,7 @@ namespace
     void vblank(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         ror::wr32(rdram, kRxVblankCount, ++g_vblanks);
+        ror::gsDumpVsync();
         if (g_handler == kMagVblankHandler)
         {
             const uint32_t count = ror::rd32(rdram, kVsyncCount) + 1;

@@ -5,8 +5,10 @@
 #include "ror.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
+#include <utility>
 
 namespace
 {
@@ -221,4 +223,39 @@ namespace ror
         }
         return out;
     }
+}
+
+// MagScene::request_menu 0x135928(scene, menu, a2), as the game has it (decompiled): MagScene state 3 (fade out, then
+// open_menu), the menu code at +0x2438, a2 at +0x2bfb4, the scene's two ids at +0x243c, then 0x13f270 (GamMan
+// 0x1c7130 with the menu code still in a1: unplayable, the menu's flags). Diagnostics, bound only with
+// ROR_MENU_SWAP=FROM:TO (hex; ror_main.cpp), otherwise the recompiled original runs: opens menu TO wherever the game
+// asks for FROM, e.g. 10000:10003 turns Start's item menu into the Save menu that a Bucket Knight's script opens
+// (native 18 -> request_menu).
+void ror_request_menu(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+{
+    static const std::pair<uint32_t, uint32_t> swap = []
+    {
+        const char *env = std::getenv("ROR_MENU_SWAP");
+        char *end = nullptr;
+        const uint32_t from = env ? static_cast<uint32_t>(std::strtoul(env, &end, 16)) : 0;
+        return std::make_pair(from, from && *end == ':' ? static_cast<uint32_t>(std::strtoul(end + 1, nullptr, 16)) : 0u);
+    }();
+    const uint32_t scene = ror::arg(ctx, 0), a2 = ror::arg(ctx, 2);
+    uint32_t menu = ror::arg(ctx, 1);
+    if (swap.first && menu == swap.first)
+    {
+        ror::log("ROR_MENU_SWAP: menu %#x -> %#x", menu, swap.second);
+        menu = swap.second;
+    }
+    ror::wr32(rdram, scene + 0x2430, 3);
+    ror::wr32(rdram, scene + 0x2434, 0xffffffffu);
+    ror::wr32(rdram, scene + 0x2bfb4, a2);
+    ror::wr32(rdram, scene + 0x2438, menu);
+    const uint32_t ids = (ror::rd32(rdram, scene + 0x2404) & 0xffff) << 16 | (ror::rd32(rdram, scene + 0x85508) & 0xffff);
+    ror::wr32(rdram, scene + 0x243c, ids);
+    // Continue at 0x13f270 as a tail jump (it returns to our caller's ra): GamMan's 0x1c7130 can switch tasks, which
+    // ror::call cannot follow.
+    (void)runtime;
+    SET_GPR_U32(ctx, 5, menu);
+    ctx->pc = 0x13f270;
 }

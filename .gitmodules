@@ -1,0 +1,7 @@
+[submodule "tools/PS2Recomp"]
+	path = tools/PS2Recomp
+	url = https://github.com/ran-j/PS2Recomp.git
+[submodule "tools/pcsx2"]
+	path = tools/pcsx2
+	url = https://github.com/PCSX2/pcsx2.git
+	shallow = true

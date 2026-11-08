@@ -1,0 +1,56 @@
+Subject: ps2xRuntime: GS CSR comes out of reset with FIFO/REV/ID; FLUSH and RESET are commands
+
+For the Rule of Rose port, which now runs libgraph's own sceGsResetGraph: it writes CSR.RESET (0x200) and reads
+the GS revision from CSR. A CSR write stored every bit except SIGNAL/FINISH, so the reset command stayed readable
+(and went on to PCSX2's GS with the privileged registers). Now FLUSH (bit 8) and RESET (bit 9) are not stored,
+NFIELD/FIELD/FIFO/REV/ID (bits 12..31) are read-only for the EE, and CSR starts as PCSX2's CSRreg.Reset leaves it:
+FIFO empty, REV 0x1B, ID 0x55 (the real game's PCSX2 GS dump reads 0x551b....).
+
+diff --git a/ps2xRuntime/src/lib/ps2_memory.cpp b/ps2xRuntime/src/lib/ps2_memory.cpp
+--- a/ps2xRuntime/src/lib/ps2_memory.cpp
++++ b/ps2xRuntime/src/lib/ps2_memory.cpp
+@@ -98,6 +98,11 @@
+     }
+ 
+     constexpr uint32_t kGsCsrRegOffset = 0x1000u;
++    // CSR as the GS comes out of reset (as PCSX2's CSRreg.Reset): FIFO empty, REV 0x1B, ID 0x55. FLUSH (bit 8) and
++    // RESET (bit 9) are commands and read back as 0; NFIELD, FIELD, FIFO, REV and ID (bits 12..31) are read-only.
++    constexpr uint64_t kGsCsrReset = 0x551B4000ull;
++    constexpr uint32_t kGsCsrCommands = 0x300u;
++    constexpr uint32_t kGsCsrReadOnly = 0xFFFFF000u;
+ 
+     // Atomically apply a 32-bit write to one half (off=0 low dword, off=4 high
+     // dword) of the GS CSR register. Bits 0..1 of the low dword (SIGNAL/FINISH) are
+@@ -115,7 +120,8 @@
+             if (off == 0u)
+             {
+                 uint32_t oldLow = static_cast<uint32_t>(expected & 0xFFFFFFFFull);
+-                uint32_t mergedLow = (oldLow & kW1cMask) | (value & ~kW1cMask);
++                uint32_t mergedLow = (oldLow & (kW1cMask | kGsCsrReadOnly)) |
++                                     (value & ~(kW1cMask | kGsCsrCommands | kGsCsrReadOnly));
+                 desired = (expected & 0xFFFFFFFF00000000ull) | static_cast<uint64_t>(mergedLow);
+                 desired &= ~static_cast<uint64_t>(value & kW1cMask);
+             }
+@@ -134,9 +140,10 @@
+         constexpr uint64_t kW1cMask = 0x3ull;
+         uint64_t expected = csr.load();
+         uint64_t desired;
++        constexpr uint64_t kKept = kW1cMask | kGsCsrReadOnly;
+         do
+         {
+-            desired = (expected & kW1cMask) | (value & ~kW1cMask);
++            desired = (expected & kKept) | (value & ~(kKept | kGsCsrCommands));
+             desired &= ~(value & kW1cMask);
+         } while (!csr.compare_exchange_weak(expected, desired));
+     }
+@@ -360,8 +367,8 @@
+         // Initialize GS registers
+         memset(&gs_regs, 0, sizeof(gs_regs));
+         // memset zero-fills std::atomic<uint64_t>::csr's bytes, which is not itself
+-        // a guaranteed-valid atomic store; make the zero-initialization explicit.
+-        gs_regs.csr.store(0);
++        // a guaranteed-valid atomic store; store the reset value explicitly.
++        gs_regs.csr.store(kGsCsrReset);
+         gs_regs.dispfb1 = (0ULL << 0) | (10ULL << 9) | (0ULL << 15) | (0ULL << 32) | (0ULL << 43);
+         gs_regs.display1 = (0ULL << 0) | (0ULL << 12) | (0ULL << 23) | (0ULL << 27) | (639ULL << 32) | (447ULL << 44);
+         gs_regs.dispfb2 = gs_regs.dispfb1;

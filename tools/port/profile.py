@@ -80,7 +80,10 @@ def main():
     def resolve(tok):
         if not tok.startswith('e'):
             return ('module', tok, tok)
-        rva = int(tok[1:], 16)
+        try:
+            rva = int(tok[1:], 16)
+        except ValueError:  # a line cut off when the run ended
+            return ('?', tok, '?')
         i = bisect.bisect_right(rvas, rva) - 1
         if i < 0:
             return ('?', tok, '?')

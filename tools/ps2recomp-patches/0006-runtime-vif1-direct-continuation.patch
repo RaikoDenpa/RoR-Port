@@ -1,0 +1,156 @@
+Subject: ps2xRuntime: VIF1 keeps decoding VIFcodes while a PATH2 IMAGE transfer is pending
+
+An IMAGE GIFtag whose NLOOP runs past the end of its DIRECT payload left the interpreter consuming the
+following VIF stream as raw image data. In a TTE chain the next bytes are the NOP/DIRECT VIFcodes from
+the next DMAtag's upper half, so every texture or CLUT uploaded over several DIRECTs landed 8 bytes late
+(Rule of Rose: location.tm2 matched the GS memory only at a +8 byte shift, its CLUT at 2 entries).
+
+The pending IMAGE count is GIF state: it now continues only through DIRECT/DIRECTHL payloads. A transfer
+that ends inside a DIRECT payload (normal-mode DMA, VIF1 FIFO writes) is tracked separately as VIF state
+(m_vif1PendingDirectQwc) and its rest continues the same command in the next call.
+
+diff --git a/ps2xRuntime/include/runtime/ps2_memory.h b/ps2xRuntime/include/runtime/ps2_memory.h
+index ea86a9c..16a29aa 100644
+--- a/ps2xRuntime/include/runtime/ps2_memory.h
++++ b/ps2xRuntime/include/runtime/ps2_memory.h
+@@ -335,6 +335,8 @@ public:
+     void flushMaskedPath3Packets(bool drainImmediately = true);
+ 
+     void submitGifPacket(GifPathId pathId, const uint8_t *data, uint32_t sizeBytes, bool drainImmediately = true, bool path2DirectHl = false);
++    // A DIRECT/DIRECTHL payload: continues a GIF IMAGE transfer left pending by an earlier payload, then submits the rest.
++    void submitVif1DirectPayload(const uint8_t *data, uint32_t qwCount, bool directHl);
+     void processGIFPacket(uint32_t srcPhysAddr, uint32_t qwCount);
+     void processGIFPacket(const uint8_t *data, uint32_t sizeBytes);
+     bool tryProcessNativeGifImageUploadChain(GS &gs, uint32_t tadr, uint32_t chcr);
+@@ -408,6 +410,7 @@ public:
+     uint8_t *m_vu1Data = nullptr;
+     bool m_path3Masked = false;
+     uint32_t m_vif1PendingPath2ImageQwc = 0u;
++    uint32_t m_vif1PendingDirectQwc = 0u; // DIRECT payload still to come when a transfer ended inside it
+     bool m_vif1PendingPath2DirectHl = false;
+     std::vector<std::vector<uint8_t>> m_path3MaskedFifo;
+ 
+diff --git a/ps2xRuntime/src/lib/ps2_memory.cpp b/ps2xRuntime/src/lib/ps2_memory.cpp
+index 37b6a4d..ca1f00b 100644
+--- a/ps2xRuntime/src/lib/ps2_memory.cpp
++++ b/ps2xRuntime/src/lib/ps2_memory.cpp
+@@ -331,6 +331,7 @@ bool PS2Memory::initialize(size_t ramSize)
+     m_path3MaskedFifo.clear();
+     m_vif1PendingPath2ImageQwc = 0u;
+     m_vif1PendingPath2DirectHl = false;
++    m_vif1PendingDirectQwc = 0u;
+     resetEeTimers();
+ 
+     try
+@@ -1231,6 +1232,7 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
+                 std::memset(&vif1_regs, 0, sizeof(vif1_regs));
+                 m_vif1PendingPath2ImageQwc = 0u;
+                 m_vif1PendingPath2DirectHl = false;
++                m_vif1PendingDirectQwc = 0u;
+                 m_path3Masked = false;
+                 if (wasPath3Masked)
+                     flushMaskedPath3Packets();
+diff --git a/ps2xRuntime/src/lib/ps2_vif1_interpreter.cpp b/ps2xRuntime/src/lib/ps2_vif1_interpreter.cpp
+index f872edd..4f78338 100644
+--- a/ps2xRuntime/src/lib/ps2_vif1_interpreter.cpp
++++ b/ps2xRuntime/src/lib/ps2_vif1_interpreter.cpp
+@@ -283,6 +283,32 @@ void PS2Memory::processVIF0Data(const uint8_t *data, uint32_t sizeBytes)
+     }
+ }
+ 
++void PS2Memory::submitVif1DirectPayload(const uint8_t *data, uint32_t qwCount, bool directHl)
++{
++    if (m_vif1PendingPath2ImageQwc != 0u)
++    {
++        const uint32_t chunkQw = std::min<uint32_t>(m_vif1PendingPath2ImageQwc, qwCount);
++        std::vector<uint8_t> imagePacket(16u + static_cast<size_t>(chunkQw) * 16u, 0u);
++        const uint64_t imageTag =
++            static_cast<uint64_t>(chunkQw & 0x7FFFu) |
++            ((m_vif1PendingPath2ImageQwc == chunkQw) ? (1ull << 15) : 0ull) |
++            (static_cast<uint64_t>(kGifFmtImage) << 58);
++        std::memcpy(imagePacket.data(), &imageTag, sizeof(imageTag));
++        std::memcpy(imagePacket.data() + 16u, data, static_cast<size_t>(chunkQw) * 16u);
++        submitGifPacket(GifPathId::Path2, imagePacket.data(), static_cast<uint32_t>(imagePacket.size()), true, directHl);
++
++        data += chunkQw * 16u;
++        qwCount -= chunkQw;
++        m_vif1PendingPath2ImageQwc -= chunkQw;
++    }
++
++    if (qwCount == 0u)
++        return;
++
++    submitGifPacket(GifPathId::Path2, data, qwCount * 16u, true, directHl);
++    m_vif1PendingPath2ImageQwc = pendingGifImageQwc(data, qwCount * 16u);
++}
++
+ void PS2Memory::processVIF1Data(uint32_t srcPhys, uint32_t sizeBytes)
+ {
+     if (sizeBytes == 0u || srcPhys >= PS2_RAM_SIZE)
+@@ -304,7 +330,10 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
+ 
+     while (pos + 4 <= sizeBytes)
+     {
+-        if (m_vif1PendingPath2ImageQwc != 0u)
++        // The previous transfer ended inside a DIRECT payload: the VIF is still in that command.
++        // A pending GIF IMAGE transfer is GIF state and continues only through DIRECT payloads;
++        // VIFcodes between two DIRECTs (e.g. the NOP/DIRECT pair a TTE chain inserts) stay VIFcodes.
++        if (m_vif1PendingDirectQwc != 0u)
+         {
+             const uint32_t availableQw = (sizeBytes - pos) / 16u;
+             if (availableQw == 0u)
+@@ -312,22 +341,10 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
+                 break;
+             }
+ 
+-            const uint32_t chunkQw = std::min<uint32_t>(m_vif1PendingPath2ImageQwc, availableQw);
+-            std::vector<uint8_t> imagePacket(16u + static_cast<size_t>(chunkQw) * 16u, 0u);
+-            const uint64_t imageTag =
+-                static_cast<uint64_t>(chunkQw & 0x7FFFu) |
+-                ((m_vif1PendingPath2ImageQwc == chunkQw) ? (1ull << 15) : 0ull) |
+-                (static_cast<uint64_t>(kGifFmtImage) << 58);
+-            std::memcpy(imagePacket.data(), &imageTag, sizeof(imageTag));
+-            std::memcpy(imagePacket.data() + 16u, data + pos, static_cast<size_t>(chunkQw) * 16u);
+-            submitGifPacket(GifPathId::Path2, imagePacket.data(), static_cast<uint32_t>(imagePacket.size()), true, m_vif1PendingPath2DirectHl);
+-
++            const uint32_t chunkQw = std::min<uint32_t>(m_vif1PendingDirectQwc, availableQw);
++            submitVif1DirectPayload(data + pos, chunkQw, m_vif1PendingPath2DirectHl);
+             pos += chunkQw * 16u;
+-            m_vif1PendingPath2ImageQwc -= chunkQw;
+-            if (m_vif1PendingPath2ImageQwc == 0u)
+-            {
+-                m_vif1PendingPath2DirectHl = false;
+-            }
++            m_vif1PendingDirectQwc -= chunkQw;
+             continue;
+         }
+ 
+@@ -492,21 +509,16 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
+                 qwCount = 65536;
+             const uint32_t availableQw = (sizeBytes - pos) / 16u;
+             const bool truncated = qwCount > availableQw;
+-            if (qwCount > availableQw)
++            const bool directHl = (opcode == VIF_DIRECTHL);
++            m_vif1PendingPath2DirectHl = directHl;
++            if (truncated)
++            {
++                m_vif1PendingDirectQwc = qwCount - availableQw;
+                 qwCount = availableQw;
++            }
+ 
+             if (qwCount > 0)
+-            {
+-                const bool directHl = (opcode == VIF_DIRECTHL);
+-                submitGifPacket(GifPathId::Path2, data + pos, qwCount * 16, true, directHl);
+-
+-                const uint32_t pendingImageQw = pendingGifImageQwc(data + pos, qwCount * 16u);
+-                if (pendingImageQw != 0u)
+-                {
+-                    m_vif1PendingPath2ImageQwc = pendingImageQw;
+-                    m_vif1PendingPath2DirectHl = directHl;
+-                }
+-            }
++                submitVif1DirectPayload(data + pos, qwCount, directHl);
+ 
+             pos += qwCount * 16;
+             if (truncated)

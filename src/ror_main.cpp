@@ -2,6 +2,9 @@
 // from tools/port/bindings.tsv, the allowlist) replaces the recompiled function at that guest address. Each
 // one goes through a trampoline that logs its first call, so the log shows which seams the game reached.
 #include "ror.h"
+#include "ror_pcsx2host.h"
+
+#include "raylib.h"
 
 #include "game_overrides.h"
 #include "runtime/ee_scheduler.h"
@@ -25,6 +28,9 @@
 #undef ROR_TRACE
 
 extern "C" __declspec(dllimport) int __stdcall IsDebuggerPresent(void);
+extern "C" __declspec(dllimport) void *__stdcall GetCurrentProcess(void);
+extern "C" __declspec(dllimport) int __stdcall TerminateProcess(void *process, unsigned int code);
+extern "C" __declspec(dllimport) unsigned long __stdcall GetCurrentProcessId(void);
 
 namespace
 {
@@ -104,6 +110,8 @@ namespace
     // When no override has run for 5 s the game is stuck in recompiled code: sample the guest pc (the generated
     // code stores it before every instruction; reading it from this thread is a deliberate, harmless race) and log
     // the range it loops in, then again every 30 s.
+    void dumpWatchRing(); // ROR_WATCH, below
+
     void watchdog(PS2Runtime *runtime)
     {
         uint64_t last = 0;
@@ -130,6 +138,7 @@ namespace
                         reportedDormant = true;
                         ror::log("watchdog: main thread went dormant; last seen pc %08x ra %08x sp %08x, invocation depth %u",
                                  lastAlive.pc, lastAlive.ra, lastAlive.sp, lastAlive.invocationDepth);
+                        dumpWatchRing();
                     }
                 }
             }
@@ -165,6 +174,51 @@ namespace
                 if (s.waiters)
                     ror::log("watchdog:   sema %d count %d/%d, %u waiting", s.id, s.count, s.maxCount, s.waiters);
         }
+        // After a stop request the runtime joins the game thread, then closes PCSX2 and exits. A process still
+        // alive 5 s later is stuck in that join: report where the guest is (it only notices the stop at a dispatch
+        // check, ps2_runtime.cpp's isStopRequested at a call/return), again at 10 s, and exit at 15 s (code 3;
+        // build.py reports it). Seen twice in the fence area before patch 0022 (notes/roadmap.md), cause open.
+        for (int s = 1; s <= 15; ++s)
+        {
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+            if (s == 15)
+            {
+                ror::log("watchdog: the game thread did not stop within 15 s: forcing exit (code 3)");
+                std::fflush(nullptr);
+                // Not std::_Exit: that runs the DLLs' detach code (PCSX2's) while their threads still run (0xC0000005).
+                TerminateProcess(GetCurrentProcess(), 3);
+            }
+            if (s != 5 && s != 10)
+                continue;
+            // ROR_HANG_CDB=<cdb.exe>: every host thread's stack into hang_stacks.txt (run folder), once; offsets
+            // in ps2EntryRunner resolve through ps2EntryRunner.map (build.py links with /MAP).
+            static const char *cdb = std::getenv("ROR_HANG_CDB");
+            if (cdb && s == 5)
+            {
+                const std::string cmd = "\"\"" + std::string(cdb) + "\" -p " + std::to_string(GetCurrentProcessId()) +
+                                        " -logo hang_stacks.txt -c \"~*kn 40; qd\" > nul 2>&1\"";
+                ror::log("watchdog: capturing host stacks with cdb (hang_stacks.txt)");
+                std::system(cmd.c_str());
+            }
+            R5900Context *ctx = g_ctx.load(std::memory_order_relaxed);
+            uint32_t lo = 0xffffffffu, hi = 0, pc = 0;
+            for (int i = 0; ctx && i < 2000; ++i)
+            {
+                pc = *reinterpret_cast<volatile uint32_t *>(&ctx->pc);
+                lo = std::min(lo, pc);
+                hi = std::max(hi, pc);
+                if ((i & 63) == 0)
+                    std::this_thread::sleep_for(std::chrono::microseconds(200));
+            }
+            ror::log("watchdog: still running %d s after the stop request; guest pc %08x (sampled range %08x-%08x), "
+                     "ra %08x, last override call count %llu", s, pc, lo, hi, ctx ? getRegU32(ctx, 31) : 0u,
+                     static_cast<unsigned long long>(g_calls.load(std::memory_order_relaxed)));
+            const EeKernelSnapshot snap = runtime->eeScheduler().snapshot();
+            for (const EeThreadSnapshot &t : snap.threads)
+                ror::log("watchdog:   thread %d status %d wait %d %d, pc %08x ra %08x%s", t.id, static_cast<int>(t.status),
+                         static_cast<int>(t.waitReason), t.waitId, t.pc, t.ra,
+                         t.id == snap.runningThreadId ? " (current)" : "");
+        }
     }
 
     template <size_t... I>
@@ -181,12 +235,23 @@ namespace
         const uint32_t ra = getRegU32(ctx, 31);
         const bool show = g_traceWindow.show(t.calls);
         if (show)
-            ror::log("trace %08x %s(%08x, %08x, %08x, %08x) from %08x", t.addr, t.name, ror::arg(ctx, 0), ror::arg(ctx, 1),
-                     ror::arg(ctx, 2), ror::arg(ctx, 3), ra);
+            ror::log("trace %08x %s(%08x, %08x, %08x, %08x; %08x, %08x, %08x, %08x) from %08x", t.addr, t.name,
+                     ror::arg(ctx, 0), ror::arg(ctx, 1), ror::arg(ctx, 2), ror::arg(ctx, 3), ror::arg(ctx, 4),
+                     ror::arg(ctx, 5), ror::arg(ctx, 6), ror::arg(ctx, 7), ra);
+        // ROR_TRACE_WIDE=1: also the 64-bit a0/a1 and f12/f13 (soft-float doubles travel in 64-bit GPRs, singles in
+        // FPRs), and on return the 64-bit v0 and f0.
+        static const bool wide = std::getenv("ROR_TRACE_WIDE") != nullptr;
+        if (show && wide)
+            ror::log("trace %08x   a0 %016llx a1 %016llx f12 %g f13 %g", t.addr,
+                     static_cast<unsigned long long>(GPR_U64(ctx, 4)), static_cast<unsigned long long>(GPR_U64(ctx, 5)),
+                     ctx->f[12], ctx->f[13]);
         t.original(rdram, ctx, runtime);
         if (!show)
             return;
-        if (ctx->pc == ra)
+        if (ctx->pc == ra && wide)
+            ror::log("trace %08x %s -> %016llx, f0 %g", t.addr, t.name, static_cast<unsigned long long>(GPR_U64(ctx, 2)),
+                     ctx->f[0]);
+        else if (ctx->pc == ra)
             ror::log("trace %08x %s -> %08x", t.addr, t.name, getRegU32(ctx, 2));
         else
             ror::log("trace %08x %s left at pc %08x (ra %08x)", t.addr, t.name, ctx->pc, ra);
@@ -199,17 +264,110 @@ namespace
     }
     constexpr auto kTraceTrampolines = makeTraceTrampolines(std::make_index_sequence<kTraceCount>{});
 
+    // ROR_WATCH=LO-HI[=VALUE][@FRAME] (hex range and value, decimal frame): guest stores overlapping [LO, HI), or only
+    // those writing VALUE as one of their 32-bit words, from frame FRAME on (patch 0018's hook). The first 200 are
+    // logged; the last 256 are kept and logged when the main thread goes dormant (watchdog), i.e. before a crash.
+    struct WatchHit
+    {
+        uint64_t frame, value;
+        uint32_t addr, size, pc, ra, sp;
+    };
+    uint32_t g_watchValue = 0;
+    bool g_watchValueSet = false;
+    uint64_t g_watchFrom = 0;
+    std::atomic<uint64_t> g_watchHits{0};
+    WatchHit g_watchRing[256];
+
+    void logWatchHit(const char *tag, const WatchHit &h)
+    {
+        ror::log("watch%s: frame %llu, %u-byte store at %08x = %016llx (pc %08x ra %08x sp %08x)", tag,
+                 static_cast<unsigned long long>(h.frame), h.size, h.addr, static_cast<unsigned long long>(h.value), h.pc,
+                 h.ra, h.sp);
+    }
+
+    void watchHit(uint32_t addr, uint32_t size, uint64_t lo, uint64_t hi, const R5900Context *ctx)
+    {
+        const uint64_t frame = ror::frame();
+        if (frame < g_watchFrom)
+            return;
+        if (g_watchValueSet)
+        {
+            bool match = false;
+            for (uint32_t i = 0; i < size && i < 16; i += 4)
+                match |= static_cast<uint32_t>((i < 8 ? lo >> (i * 8) : hi >> ((i - 8) * 8))) == g_watchValue;
+            if (!match)
+                return;
+        }
+        const WatchHit h{frame, lo, addr, size, ctx ? ctx->pc : 0u, ctx ? getRegU32(ctx, 31) : 0u,
+                         ctx ? getRegU32(ctx, 29) : 0u};
+        const uint64_t n = g_watchHits.fetch_add(1);
+        g_watchRing[n % 256] = h;
+        if (n < 200)
+            logWatchHit("", h);
+    }
+
+    void dumpWatchRing()
+    {
+        const uint64_t n = g_watchHits.load();
+        if (!n)
+            return;
+        ror::log("watch: the last %llu of %llu stores:", static_cast<unsigned long long>(std::min<uint64_t>(n, 256)),
+                 static_cast<unsigned long long>(n));
+        for (uint64_t i = n > 256 ? n - 256 : 0; i < n; ++i)
+            logWatchHit(" (last)", g_watchRing[i % 256]);
+    }
+
+    void installWatch()
+    {
+        const char *e = std::getenv("ROR_WATCH");
+        unsigned lo = 0, hi = 0, value = 0;
+        if (!e)
+            return;
+        const int n = std::sscanf(e, "%x-%x=%x", &lo, &hi, &value);
+        if (n < 2 || hi <= lo)
+        {
+            ror::log("ROR_WATCH=%s: expected LO-HI[=VALUE][@FRAME], hex range and value", e);
+            return;
+        }
+        if (const char *at = std::strchr(e, '@'))
+            g_watchFrom = std::strtoull(at + 1, nullptr, 10);
+        g_watchValue = value;
+        g_watchValueSet = n == 3;
+        g_ps2WriteWatch.fn = watchHit;
+        g_ps2WriteWatch.lo = lo;
+        g_ps2WriteWatch.hi = hi;
+        ror::log("watch: guest stores to %08x-%08x%s", lo, hi, g_watchValueSet ? " (value filter)" : "");
+    }
+
     void apply(PS2Runtime &runtime)
     {
+        installWatch();
         // The game's recompiled newlib malloc owns SetupHeap's range (crt0 SetupHeap(_end 0x852d94, -1); the heap
         // probe 0x105c38 then takes the largest block for the game heap 0x7135c0). The runtime's own packets get
         // the top 256 KB below the runtime's hard heap limit 0x1F00000 instead (patch 0004); main's stack is
         // 0x1F80000-0x2000000 and interrupt stacks sit between (patch 0003).
         runtime.reserveGuestHeapArena(0x1EC0000u, 0x1F00000u);
-        ror::gsInstall(runtime);
-        size_t ok = 0;
+        // raylib's PollInputEvents waits for window messages while the window is minimized (rcore_desktop_glfw.c:
+        // `while (minimized && !ALWAYS_RUN) glfwWaitEvents()`), so a run stopped while minimized never left
+        // PS2Runtime::run: the shutdown hang (notes/roadmap.md; reproduced by minimizing, main thread in
+        // NtUserWaitMessage). The game thread runs on its own, so keep the main loop running as well.
+        if (IsWindowReady())
+            SetWindowState(FLAG_WINDOW_ALWAYS_RUN);
+        else
+            SetConfigFlags(FLAG_WINDOW_ALWAYS_RUN);   // ORed with the runtime's FLAG_WINDOW_RESIZABLE at InitWindow
+        ror::gsInstall(runtime, ror::pcsx2Open());
+        // Diagnostic overrides, bound only when their variable is set; otherwise the recompiled original runs.
+        constexpr std::pair<uint32_t, const char *> kOnlyWith[] = {{0x135928, "ROR_MENU_SWAP"}};
+        size_t ok = 0, skipped = 0;
         for (size_t i = 0; i < kCount; ++i)
         {
+            const auto cond = std::find_if(std::begin(kOnlyWith), std::end(kOnlyWith),
+                                           [&](const auto &c) { return c.first == kBindings[i].addr; });
+            if (cond != std::end(kOnlyWith) && !std::getenv(cond->second))
+            {
+                ++skipped;
+                continue;
+            }
             if (runtime.replaceFunction(kBindings[i].addr, kTrampolines[i]))
                 ++ok;
             else
@@ -220,7 +378,8 @@ namespace
             g_traces[i].original = runtime.lookupFunction(g_traces[i].addr);
             runtime.replaceFunction(g_traces[i].addr, kTraceTrampolines[i]);
         }
-        ror::log("Rule of Rose overrides: %zu of %zu bound, %zu traced", ok, kCount, kTraceCount);
+        ror::log("Rule of Rose overrides: %zu of %zu bound, %zu diagnostic left unbound, %zu traced", ok, kCount, skipped,
+                 kTraceCount);
         std::thread(watchdog, &runtime).detach();
     }
 
@@ -297,9 +456,19 @@ namespace ror
         SET_GPR_U32(ctx, 31, ra);
         ctx->pc = fn;
         runtime->lookupFunction(fn)(rdram, ctx, runtime);
+        // Generated code hands a transfer back with pc set to its target: always for a jump, and at any call when
+        // the EE scheduler's checkpoint is due (dispatchGuestBranch). The scheduler's loop resumes there; so must we,
+        // or the rest of the callee never runs (frame 15465 on the hall's upper stairs: gs_swap_env's tail jump into
+        // sceGsPutDrawEnv handed back, the swap skipped, a frame later the main thread jumped into GamMan's data).
+        int resumes = 0;
+        while (ctx->pc != ra && ctx->pc != 0u && !runtime->isStopRequested() && resumes < 100000)
+        {
+            ++resumes;
+            runtime->lookupFunction(ctx->pc)(rdram, ctx, runtime);
+        }
         const uint32_t v0 = getRegU32(ctx, 2);
         if (ctx->pc != ra && !runtime->isStopRequested())
-            log("call %08x returned to %08x, expected %08x", fn, ctx->pc, ra);
+            log("call %08x returned to %08x, expected %08x (after %d resumes)", fn, ctx->pc, ra, resumes);
         SET_GPR_U32(ctx, 31, ra);
         ctx->pc = pc;
         return v0;

@@ -1,0 +1,55 @@
+Subject: ps2xRuntime: guest write watch on the (unused) ps2TraceGuestWrite hook
+
+For the Rule of Rose port's debugging (a crash after the A164 caption: a return through a corrupted stack slot).
+Every RAM store of the generated code (WRITE8..WRITE128) already calls the inline ps2TraceGuestWrite hook, which
+did nothing. g_ps2WriteWatch {lo, hi, fn}: a store overlapping [lo, hi) is passed to fn with the context; off while
+hi == 0 (one compare per store). The port arms it with ROR_WATCH.
+
+diff --git a/ps2xRuntime/include/ps2_runtime.h b/ps2xRuntime/include/ps2_runtime.h
+--- a/ps2xRuntime/include/ps2_runtime.h
++++ b/ps2xRuntime/include/ps2_runtime.h
+@@ -237,6 +237,16 @@
+     return static_cast<uint8_t>((valueHi >> ((byteIndex - 8u) * 8u)) & 0xFFu);
+ }
+ 
++// Guest write watch: every RAM store the generated code makes (WRITE8..WRITE128) that overlaps [lo, hi) is passed to
++// fn. Off while hi == 0 (one compare per store).
++struct Ps2WriteWatch
++{
++    uint32_t lo = 0;
++    uint32_t hi = 0;
++    void (*fn)(uint32_t addr, uint32_t size, uint64_t valueLo, uint64_t valueHi, const R5900Context *ctx) = nullptr;
++};
++extern Ps2WriteWatch g_ps2WriteWatch;
++
+ inline void ps2TraceGuestWrite(uint8_t *rdram,
+                                uint32_t guestAddr,
+                                uint32_t size,
+@@ -246,13 +256,9 @@
+                                const R5900Context *ctx)
+ {
+     (void)rdram;
+-    (void)guestAddr;
+-    (void)size;
+-    (void)valueLo;
+-    (void)valueHi;
+     (void)op;
+-    (void)ctx;
+-    // TODO we dont need this anymore so on next release it will be deleted
++    if (guestAddr < g_ps2WriteWatch.hi && guestAddr + size > g_ps2WriteWatch.lo && g_ps2WriteWatch.fn)
++        g_ps2WriteWatch.fn(guestAddr, size, valueLo, valueHi, ctx);
+ }
+ 
+ inline void ps2TraceGuestRangeWrite(uint8_t *rdram,
+diff --git a/ps2xRuntime/src/lib/ps2_runtime.cpp b/ps2xRuntime/src/lib/ps2_runtime.cpp
+--- a/ps2xRuntime/src/lib/ps2_runtime.cpp
++++ b/ps2xRuntime/src/lib/ps2_runtime.cpp
+@@ -10,6 +10,8 @@
+ #include "Kernel/Stubs/Audio.h"
+ #include "Kernel/Stubs/GS.h"
+ #include "Kernel/Stubs/MPEG.h"
++
++Ps2WriteWatch g_ps2WriteWatch;
+ #include "ps2_host_backend.h"
+ #include "ps2_iop_host.h"
+ #include "ps2x/iop/iop_subsystem.h"

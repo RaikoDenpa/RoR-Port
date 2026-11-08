@@ -1,0 +1,42 @@
+Subject: ps2xRuntime: observer for the VIF1 input stream
+
+PS2Memory::setVif1Observer sees every stream processVIF1Data receives (DMA channel 1 chains and transfers, VIF1
+FIFO writes) before it is decoded. Rule of Rose records it into GS dumps that a patched pcsx2-gsrunner replays
+through PCSX2's VIF1 + microVU + GS (renderer plan step 0b), and it is the seam where PCSX2's VIF1 would take over.
+
+diff --git a/ps2xRuntime/include/runtime/ps2_memory.h b/ps2xRuntime/include/runtime/ps2_memory.h
+index c773590..cf5680f 100644
+--- a/ps2xRuntime/include/runtime/ps2_memory.h
++++ b/ps2xRuntime/include/runtime/ps2_memory.h
+@@ -339,6 +339,10 @@ public:
+                          uint32_t streamOffset = 0u);
+     // A DIRECT/DIRECTHL payload: continues a GIF IMAGE transfer left pending by an earlier payload, then submits the rest.
+     void submitVif1DirectPayload(const uint8_t *data, uint32_t qwCount, bool directHl);
++    // Sees every stream processVIF1Data receives (DMA channel 1 chains and transfers, VIF1 FIFO writes), before it is
++    // decoded: the VIF1 input, e.g. for dumps replayed through another VIF1/VU1.
++    using Vif1ObserverFn = std::function<void(const uint8_t *, uint32_t)>;
++    void setVif1Observer(Vif1ObserverFn fn) { m_vif1Observer = std::move(fn); }
+     void processGIFPacket(uint32_t srcPhysAddr, uint32_t qwCount);
+     void processGIFPacket(const uint8_t *data, uint32_t sizeBytes);
+     bool tryProcessNativeGifImageUploadChain(GS &gs, uint32_t tadr, uint32_t chcr);
+@@ -413,6 +417,7 @@ public:
+     bool m_path3Masked = false;
+     uint32_t m_vif1PendingPath2ImageQwc = 0u;
+     uint32_t m_vif1PendingDirectQwc = 0u; // DIRECT payload still to come when a transfer ended inside it
++    Vif1ObserverFn m_vif1Observer;
+     bool m_vif1PendingPath2DirectHl = false;
+     std::vector<std::vector<uint8_t>> m_path3MaskedFifo;
+ 
+diff --git a/ps2xRuntime/src/lib/ps2_vif1_interpreter.cpp b/ps2xRuntime/src/lib/ps2_vif1_interpreter.cpp
+index fceea0e..fc3055a 100644
+--- a/ps2xRuntime/src/lib/ps2_vif1_interpreter.cpp
++++ b/ps2xRuntime/src/lib/ps2_vif1_interpreter.cpp
+@@ -325,6 +325,8 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
+ {
+     if (sizeBytes == 0u)
+         return;
++    if (m_vif1Observer)
++        m_vif1Observer(data, sizeBytes);
+ 
+     uint32_t pos = 0;
+ 

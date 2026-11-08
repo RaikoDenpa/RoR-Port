@@ -1,0 +1,22 @@
+Subject: ps2xRecomp: SQRT.S reads its operand from ft, as the EE does
+
+Rule of Rose port, milestone 6 (movement): a sideways stick never moved the player. bedpad's stick vector
+0x102188 computes |v| with `sqrt.s $f2, $f12` (0x460c0084) and got sqrt($f0) = |y|: x alone gave 0, the diagonal
+(-0.5, -0.5) gave 0.50 (peeked pad +0x54). The EE's SQRT.S fd, ft encodes its operand in the ft field (bits 20-16)
+with fs = 0 (EE Core Instruction Set Manual, COP1 SQRT.S; Ghidra's EE module decodes the same word as
+`sqrt.S f2,f12`); the translator used fs. 54 of the ELF's 76 sqrt.s have ft != 0 (47 of them $f12).
+
+diff --git a/ps2xRecomp/src/lib/fpu_translator.cpp b/ps2xRecomp/src/lib/fpu_translator.cpp
+--- a/ps2xRecomp/src/lib/fpu_translator.cpp
++++ b/ps2xRecomp/src/lib/fpu_translator.cpp
+@@ -58,7 +58,9 @@
+                                    "ctx->f[{}] = FPU_DIV_S(ctx->f[{}], ctx->f[{}]); }}",
+                                    ft, fd, fs, ft);
+             case COP1_S_SQRT:
+-                return fmt::format("ctx->f[{}] = FPU_SQRT_S(ctx->f[{}]);", fd, fs);
++                // The EE's SQRT.S fd, ft takes its operand from the ft field (bits 20-16); fs is 0 (EE Core
++                // Instruction Set Manual, COP1 SQRT.S), unlike the MIPS IV SQRT.S fd, fs.
++                return fmt::format("ctx->f[{}] = FPU_SQRT_S(ctx->f[{}]);", fd, ft);
+             case COP1_S_ABS:
+                 return fmt::format("ctx->f[{}] = FPU_ABS_S(ctx->f[{}]);", fd, fs);
+             case COP1_S_MOV:

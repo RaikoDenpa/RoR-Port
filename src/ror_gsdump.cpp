@@ -17,7 +17,19 @@
 //               PACKED data converted to register values as the GS does) and the GS memory; transfer state idle (total
 //               0, what PCSX2 assumes for version 8 dumps), path tags idle. A dump starts only when no path is inside a
 //               GIF packet, otherwise one frame later.
+//
+//   ROR_GSDUMP_VIF1=1 adds the VIF1 side (renderer plan step 0b; ror-gsreplay --vif1 reads these, gsdump_F_vif1.gs):
+//   after the registers a record 0x40 with the VU1 state (micro and data memory, VIF1 registers,
+//   VF/VI/ACC/Q/P/I/R/MAC/clip/status), and a record 0x41 per stream PS2Memory::processVIF1Data receives (patch
+//   0010's observer), each {u8 type, u32 size, data}.
+//
+//   ROR_GS=pcsx2: PS2Recomp's GS and VU1 are idle (null raster backend, VIF1 sink), so the state and the VU1 state come
+//   from PCSX2 (ror_pcsx2_gs_save_state, ror_pcsx2_vu1_get_state) and the VIF1 records are always written: the GIF
+//   streams hold PATH3 only, the dump replays with --vif1, through the code the live port runs.
+//
+// The GIF, register and VIF1 observers are installed by ror_gs.cpp, which also feeds PCSX2 from them.
 #include "ror.h"
+#include "ror_pcsx2host.h"
 
 #include "runtime/gs/ps2_gif_arbiter.h"
 
@@ -36,6 +48,7 @@ namespace
     constexpr char kSerial[] = "SLES-54218";
     constexpr uint32_t kStateSize = 4194813u; // GSState::GetSaveStateSize(9)
     enum : uint8_t { kTransfer = 0, kVSync = 1, kReadFifo2 = 2, kRegisters = 3 };  // GSDumpTypes::GSType
+    enum : uint8_t { kVu1State = 0x40, kVif1Data = 0x41 };                          // ours (ROR_GSDUMP_VIF1)
     enum : uint8_t { kPath2 = 1, kPath3 = 2, kPath1New = 3 };                        // GSDumpTypes::GSTransferPath
     constexpr uint64_t kTex2Mask = 0xFFFFFFE003F00000ull;                           // GSState::GIFRegHandlerTEX2
 
@@ -75,7 +88,16 @@ namespace
     std::string g_path;
     uint32_t g_framesLeft = 0;
     bool g_field = false;
-    uint32_t g_count[4] = {}, g_regWrites = 0, g_vsyncs = 0, g_reads = 0;
+    bool g_vif1 = false;
+    bool g_pcsx2 = false; // state and VU1 state from PCSX2
+    uint32_t g_count[4] = {}, g_regWrites = 0, g_vsyncs = 0, g_reads = 0, g_vif1Streams = 0;
+
+    void writeRecord(uint8_t type, const void *data, uint32_t size)
+    {
+        std::fputc(type, g_out);
+        std::fwrite(&size, 4, 1, g_out);
+        std::fwrite(data, 1, size, g_out);
+    }
 
     void writeReg(uint8_t a, uint64_t v)
     {
@@ -261,33 +283,39 @@ namespace
         return s;
     }
 
-    // GSPrivRegSet: the 8 KB at 0x12000000, registers 16 bytes apart.
     std::vector<uint8_t> privRegs(bool field)
     {
-        std::vector<uint8_t> r(8192, 0);
-        const GSRegisters &g = g_runtime->memory().gs();
-        auto at = [&](uint32_t off, uint64_t v) { std::memcpy(r.data() + off, &v, 8); };
-        at(0x00, g.pmode);
-        at(0x10, g.smode1);
-        at(0x20, g.smode2);
-        at(0x30, g.srfsh);
-        at(0x40, g.synch1);
-        at(0x50, g.synch2);
-        at(0x60, g.syncv);
-        at(0x70, g.dispfb1);
-        at(0x80, g.display1);
-        at(0x90, g.dispfb2);
-        at(0xa0, g.display2);
-        at(0xb0, g.extbuf);
-        at(0xc0, g.extdata);
-        at(0xd0, g.extwrite);
-        at(0xe0, g.bgcolor);
-        const uint64_t csr = g.csr.load(std::memory_order_relaxed);
-        at(0x1000, field ? (csr | 0x2000u) : (csr & ~0x2000ull)); // CSR.FIELD: MTGS passes field = FIELD ? 0 : 1
-        at(0x1010, g.imr);
-        at(0x1040, g.busdir);
-        at(0x1080, g.siglblid);
+        std::vector<uint8_t> r;
+        ror::gsPrivRegs(*g_runtime, field, r);
         return r;
+    }
+
+    // Record 0x40: VU1 micro + data memory, VIFRegisters (23 words), then VF[32][4], VI[16], ACC[4], Q, P, I, R, MAC,
+    // clip, status.
+    void writeVu1State()
+    {
+        if (g_pcsx2)
+        {
+            std::vector<unsigned char> b;
+            if (!ror::pcsx2Vu1State(b))
+                ror::log("gs dump: PCSX2's VU1 state is unavailable");
+            writeRecord(kVu1State, b.data(), static_cast<uint32_t>(b.size()));
+            return;
+        }
+        PS2Memory &mem = g_runtime->memory();
+        const VU1State &vu = g_runtime->vu1().state();
+        std::vector<uint8_t> b;
+        b.insert(b.end(), mem.getVU1Code(), mem.getVU1Code() + 0x4000);
+        b.insert(b.end(), mem.getVU1Data(), mem.getVU1Data() + 0x4000);
+        put(b, mem.vif1_regs);
+        put(b, vu.vf);
+        put(b, vu.vi);
+        put(b, vu.acc);
+        for (float f : {vu.q, vu.p, vu.i})
+            put(b, f);
+        for (uint32_t u : {vu.r, vu.mac, vu.clip, vu.status})
+            put(b, u);
+        writeRecord(kVu1State, b.data(), static_cast<uint32_t>(b.size()));
     }
 
     void writeTransfer(uint8_t path, const uint8_t *data, uint32_t size)
@@ -309,17 +337,26 @@ namespace
 
     void start(uint64_t frame, uint32_t frames)
     {
-        g_path = "gsdump_" + std::to_string(frame) + ".gs";
+        g_path = "gsdump_" + std::to_string(frame) + (g_vif1 ? "_vif1.gs" : ".gs");
         g_out = std::fopen(g_path.c_str(), "wb");
         if (!g_out)
         {
             ror::log("gs dump: cannot write %s", g_path.c_str());
             return;
         }
-        std::vector<uint8_t> vram;
-        ror::gsSnapshotVram(vram);
-        vram.resize(4u << 20);
-        const std::vector<uint8_t> state = freeze(vram);
+        std::vector<uint8_t> state;
+        if (g_pcsx2)
+        {
+            if (!ror::pcsx2GsState(state))
+                ror::log("gs dump: PCSX2's GS state is unavailable");
+        }
+        else
+        {
+            std::vector<uint8_t> vram;
+            ror::gsSnapshotVram(vram);
+            vram.resize(4u << 20);
+            state = freeze(vram);
+        }
         if (state.size() != kStateSize)
             ror::log("gs dump: state is %zu bytes, PCSX2 expects %u", state.size(), kStateSize);
 
@@ -333,10 +370,12 @@ namespace
         std::fwrite(state.data(), 1, state.size(), g_out);
         const std::vector<uint8_t> regs = privRegs(g_field);
         std::fwrite(regs.data(), 1, regs.size(), g_out);
+        if (g_vif1)
+            writeVu1State();
 
         g_framesLeft = frames;
         std::memset(g_count, 0, sizeof(g_count));
-        g_regWrites = g_vsyncs = g_reads = 0;
+        g_regWrites = g_vsyncs = g_reads = g_vif1Streams = 0;
         ror::log("gs dump: frame %llu -> %s (%u frames)", static_cast<unsigned long long>(frame), g_path.c_str(), frames);
     }
 
@@ -346,14 +385,43 @@ namespace
         std::fclose(g_out);
         g_out = nullptr;
         ror::log("gs dump: %s: %u PATH1, %u PATH2, %u PATH3 transfers (%u of them A+D from writeRegister), %u vsyncs, "
-                 "%u reads, %ld bytes",
-                 g_path.c_str(), g_count[kPath1New], g_count[kPath2], g_count[kPath3], g_regWrites, g_vsyncs, g_reads, size);
+                 "%u reads, %u VIF1 streams, %ld bytes",
+                 g_path.c_str(), g_count[kPath1New], g_count[kPath2], g_count[kPath3], g_regWrites, g_vsyncs, g_reads,
+                 g_vif1Streams, size);
     }
 }
 
 namespace ror
 {
-    void gsDumpInstall(PS2Runtime &runtime)
+    // GSPrivRegSet: the 8 KB at 0x12000000, registers 16 bytes apart (also what PCSX2's live GS gets, ror_gs.cpp).
+    void gsPrivRegs(PS2Runtime &runtime, bool field, std::vector<uint8_t> &r)
+    {
+        r.assign(8192, 0);
+        const GSRegisters &g = runtime.memory().gs();
+        auto at = [&](uint32_t off, uint64_t v) { std::memcpy(r.data() + off, &v, 8); };
+        at(0x00, g.pmode);
+        at(0x10, g.smode1);
+        at(0x20, g.smode2);
+        at(0x30, g.srfsh);
+        at(0x40, g.synch1);
+        at(0x50, g.synch2);
+        at(0x60, g.syncv);
+        at(0x70, g.dispfb1);
+        at(0x80, g.display1);
+        at(0x90, g.dispfb2);
+        at(0xa0, g.display2);
+        at(0xb0, g.extbuf);
+        at(0xc0, g.extdata);
+        at(0xd0, g.extwrite);
+        at(0xe0, g.bgcolor);
+        const uint64_t csr = g.csr.load(std::memory_order_relaxed);
+        at(0x1000, field ? (csr | 0x2000u) : (csr & ~0x2000ull)); // CSR.FIELD: MTGS passes field = FIELD ? 0 : 1
+        at(0x1010, g.imr);
+        at(0x1040, g.busdir);
+        at(0x1080, g.siglblid);
+    }
+
+    bool gsDumpInstall(PS2Runtime &runtime, bool pcsx2)
     {
         const char *e = std::getenv("ROR_GSDUMP");
         for (const char *p = e; p && *p;)
@@ -368,27 +436,53 @@ namespace ror
             p = *end == ',' ? end + 1 : end;
         }
         if (g_plan.empty())
-            return;
+            return false;
         g_runtime = &runtime;
-        runtime.gifArbiter().setObserver([](GifPathId id, const uint8_t *data, uint32_t size)
-                                         {
-            const uint8_t path = id == GifPathId::Path1 ? kPath1New : id == GifPathId::Path2 ? kPath2 : kPath3;
-            std::lock_guard<std::mutex> lock(g_mutex);
-            consume(path, data, size);
-            if (g_out)
-                writeTransfer(path, data, size); });
-        runtime.gs().setRegisterObserver([](uint8_t reg, uint64_t value)
-                                         {
-            std::lock_guard<std::mutex> lock(g_mutex);
-            writeReg(reg, value);
-            if (!g_out)
-                return;
-            if (g_s.path[kPath3].left)
-                ror::log("gs dump: register %02x written while PATH3 is inside a packet", reg);
-            const uint64_t packet[4] = {1ull | (1ull << 15) | (1ull << 60), 0xe, value, reg}; // NLOOP 1, EOP, PACKED, A+D
-            writeTransfer(kPath3, reinterpret_cast<const uint8_t *>(packet), sizeof(packet));
-            ++g_regWrites; });
-        ror::log("gs dump: %zu planned, GIF and register observers installed", g_plan.size());
+        g_pcsx2 = pcsx2;
+        if (const char *v = std::getenv("ROR_GSDUMP_VIF1"))
+            g_vif1 = *v == '1';
+        g_vif1 = g_vif1 || pcsx2;
+        ror::log("gs dump: %zu planned%s%s", g_plan.size(), g_vif1 ? ", with the VIF1 streams" : "",
+                 pcsx2 ? ", state from PCSX2" : "");
+        return true;
+    }
+
+    bool gsDumpVif1Wanted() { return g_vif1; }
+
+    void gsDumpGif(GifPathId id, const uint8_t *data, uint32_t size)
+    {
+        if (g_plan.empty())
+            return;
+        const uint8_t path = id == GifPathId::Path1 ? kPath1New : id == GifPathId::Path2 ? kPath2 : kPath3;
+        std::lock_guard<std::mutex> lock(g_mutex);
+        consume(path, data, size);
+        if (g_out)
+            writeTransfer(path, data, size);
+    }
+
+    void gsDumpRegister(uint8_t reg, uint64_t value, const uint64_t (&packet)[4])
+    {
+        if (g_plan.empty())
+            return;
+        std::lock_guard<std::mutex> lock(g_mutex);
+        writeReg(reg, value);
+        if (!g_out)
+            return;
+        if (g_s.path[kPath3].left)
+            ror::log("gs dump: register %02x written while PATH3 is inside a packet", reg);
+        writeTransfer(kPath3, reinterpret_cast<const uint8_t *>(packet), sizeof(packet));
+        ++g_regWrites;
+    }
+
+    void gsDumpVif1(const uint8_t *data, uint32_t size)
+    {
+        if (g_plan.empty())
+            return;
+        std::lock_guard<std::mutex> lock(g_mutex);
+        if (!g_out)
+            return;
+        writeRecord(kVif1Data, data, size);
+        ++g_vif1Streams;
     }
 
     void gsDumpFrameMark(uint64_t frame)

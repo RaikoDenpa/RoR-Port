@@ -1,0 +1,24 @@
+Rule of Rose PC port - playtest build: what is in this package
+=============================================================
+
+Rule of Rose is (c) 2006 Sony Computer Entertainment / Punchline. This is an
+unofficial, non-commercial fan project, not affiliated with them. The package
+contains no game files (graphics, sound, movies, the disc's program): they are
+read from the player's own disc image. bin\ps2EntryRunner.exe contains the
+game's program translated to C++ by a static recompiler and compiled for PC.
+
+Third-party components and their licences (texts in the licenses folder):
+
+  PS2Recomp runtime (in ps2EntryRunner.exe)   GPL v3      licenses\PS2Recomp-GPLv3.txt
+  PCSX2 v2.8.2 GS/VU/VIF (bin\pcsx2-ror.dll)  GPL v3      licenses\PCSX2-GPLv3.txt
+    and its libraries (SDL3, freetype, harfbuzz, libpng, libjpeg-turbo,
+    libwebp, zlib, lz4, zstd, shaderc, plutosvg, rapidyaml)   licenses\pcsx2-deps
+  FFmpeg 8.1.2 (gyan.dev shared build)        GPL v3      licenses\FFmpeg-GPLv3.txt
+  raylib (in ps2EntryRunner.exe)              zlib        licenses\raylib-zlib.txt
+  Microsoft Visual C++ runtime, D3D12 Agility SDK: Microsoft redistributables.
+
+Source code: the GPL-licensed parts' corresponding source (PS2Recomp, PCSX2 and
+the port's changes to both, the port's own code that links them, FFmpeg's
+version) is available on request from the person who gave you this package,
+for three years from receiving it. Upstream: github.com/ran-j/PS2Recomp,
+github.com/PCSX2/pcsx2 (v2.8.2), ffmpeg.org (8.1.2; build: gyan.dev).

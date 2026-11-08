@@ -1,0 +1,103 @@
+Subject: ps2xRuntime: external presentation (the game's renderer presents, raylib only polls)
+
+For the Rule of Rose port's PCSX2 GS (renderer plan step 2): PCSX2 presents into a child window of the raylib window.
+setExternalPresentation(init, loop, shutdown, user): init at the start of run(), then each main-loop iteration only
+PollInputEvents + loop + the close check + a 4 ms sleep instead of UploadFrame/BeginDrawing/EndDrawing, and shutdown
+after the game thread has joined, before CloseWindow (the child window and its swap chain go first).
+
+diff --git a/ps2xRuntime/include/ps2_runtime.h b/ps2xRuntime/include/ps2_runtime.h
+--- a/ps2xRuntime/include/ps2_runtime.h
++++ b/ps2xRuntime/include/ps2_runtime.h
+@@ -307,6 +307,16 @@
+                              DebugUiCallback shutdownCallback,
+                              void *userData);
+ 
++    // Presentation by the game's own renderer (e.g. a GS presenting into a child window): with a loop callback set,
++    // the main loop keeps polling input and the close request but draws nothing. All three run on the main (window)
++    // thread: init in run() before the game thread starts (the window exists), loop once per iteration (about 250 Hz),
++    // shutdown after the game thread has stopped and before CloseWindow. Set before run() (a game override may).
++    using ExternalPresentationCallback = void (*)(PS2Runtime &runtime, void *userData);
++    void setExternalPresentation(ExternalPresentationCallback initCallback,
++                                 ExternalPresentationCallback loopCallback,
++                                 ExternalPresentationCallback shutdownCallback,
++                                 void *userData);
++
+     using RecompiledFunction = void (*)(uint8_t *, R5900Context *, PS2Runtime *);
+ 
+     enum class GuestBranchKind
+@@ -531,6 +541,10 @@
+     DebugUiCallback m_debugUiShutdownCallback = nullptr;
+     void *m_debugUiUserData = nullptr;
+     bool m_debugUiInitialized = false;
++    ExternalPresentationCallback m_externalInit = nullptr;
++    ExternalPresentationCallback m_externalLoop = nullptr;
++    ExternalPresentationCallback m_externalShutdown = nullptr;
++    void *m_externalUserData = nullptr;
+ 
+ public:
+     std::atomic<uint32_t> m_debugPc{0};
+diff --git a/ps2xRuntime/src/lib/ps2_runtime.cpp b/ps2xRuntime/src/lib/ps2_runtime.cpp
+--- a/ps2xRuntime/src/lib/ps2_runtime.cpp
++++ b/ps2xRuntime/src/lib/ps2_runtime.cpp
+@@ -505,6 +505,17 @@
+     m_guestHeapConfigured = false;
+     m_asyncCallbackStackFloor = std::min(kGuestHeapHardLimit, PS2_RAM_SIZE);
+     m_asyncCallbackStackTop = PS2_RAM_SIZE;
++}
++
++void PS2Runtime::setExternalPresentation(ExternalPresentationCallback initCallback,
++                                         ExternalPresentationCallback loopCallback,
++                                         ExternalPresentationCallback shutdownCallback,
++                                         void *userData)
++{
++    m_externalInit = initCallback;
++    m_externalLoop = loopCallback;
++    m_externalShutdown = shutdownCallback;
++    m_externalUserData = userData;
+ }
+ 
+ void PS2Runtime::setDebugUiCallbacks(DebugUiCallback initCallback,
+@@ -2390,6 +2401,11 @@
+ 
+     std::atomic<bool> gameThreadFinished{false};
+ 
++    if (m_externalInit)
++    {
++        m_externalInit(*this, m_externalUserData);
++    }
++
+     std::thread gameThread([&]()
+                            {
+         ThreadNaming::SetCurrentThreadName("GameThread");
+@@ -2446,6 +2462,20 @@
+ 
+             }
+         });
++        if (m_externalLoop)
++        {
++            // Someone else presents: input, the close request and the owner's per-iteration work only.
++            PollInputEvents();
++            m_externalLoop(*this, m_externalUserData);
++            if (WindowShouldClose())
++            {
++                RUNTIME_LOG("[run] window close requested, breaking out of loop");
++                requestStop();
++                break;
++            }
++            std::this_thread::sleep_for(std::chrono::milliseconds(4));
++            continue;
++        }
+         uint32_t presentWidth = FB_WIDTH;
+         uint32_t presentHeight = DEFAULT_DISPLAY_HEIGHT;
+         UploadFrame(frameTex, this, presentWidth, presentHeight);
+@@ -2485,6 +2515,10 @@
+     {
+         gameThread.join();
+     }
++    if (m_externalShutdown)
++    {
++        m_externalShutdown(*this, m_externalUserData);
++    }
+ 
+     if (m_debugUiInitialized && m_debugUiShutdownCallback)
+     {

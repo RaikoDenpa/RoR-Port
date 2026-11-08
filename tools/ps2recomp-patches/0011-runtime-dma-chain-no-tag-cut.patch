@@ -1,0 +1,71 @@
+Subject: ps2xRuntime: DMA source chains no longer cut at 4,096 tags; every early end logged
+
+The chain walker of DMA channels 0/1/2 (VIF0, VIF1, GIF) stopped after 4,096 tags and dropped the rest without a
+word. Rule of Rose's i3r chain has ~14,400 tags per frame (2.9 MB): VU1 never saw the last 70 %, characters
+included. Now: safety caps far above any real chain (1M tags, 64 MB) against a looping chain, and the cap, an
+untranslatable tag address and a tag outside RAM/scratchpad each print a [DMA] ERROR line (rate-limited after 32).
+
+diff --git a/ps2xRuntime/src/lib/ps2_memory.cpp b/ps2xRuntime/src/lib/ps2_memory.cpp
+index cf17154..56da90d 100644
+--- a/ps2xRuntime/src/lib/ps2_memory.cpp
++++ b/ps2xRuntime/src/lib/ps2_memory.cpp
+@@ -1346,7 +1346,10 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
+                     uint32_t asr1 = m_ioRegisters[channelBase + 0x50];
+                     uint32_t asp = (chcr >> 4) & 0x3u;
+                     const bool tieEnabled = (chcr & (1u << 7)) != 0u;
+-                    const int kMaxChainTags = 4096;
++                    // Safety caps against a chain that never ends (a next/call loop), far above any real chain
++                    // (Rule of Rose's i3r chain: ~14,400 tags, ~2.9 MB per frame). Every early end is logged.
++                    const int kMaxChainTags = 1 << 20;
++                    const size_t kMaxChainBytes = size_t(64) << 20;
+                     std::vector<uint8_t> chainBuf;
+ 
+                     auto appendData = [&](uint32_t srcAddr, uint32_t qwCount)
+@@ -1406,9 +1409,27 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
+ 
+                     int tagsProcessed = 0;
+                     uint32_t lastTagUpper = (chcr >> 16) & 0xFFFFu;
++                    const uint32_t chainStart = tagAddr;
+ 
+-                    while (tagsProcessed < kMaxChainTags)
++                    auto chainCut = [&](const char *why)
+                     {
++                        static std::atomic<uint32_t> s_cuts{0};
++                        const uint32_t n = s_cuts.fetch_add(1, std::memory_order_relaxed) + 1u;
++                        if (n <= 32u || (n & 1023u) == 0u)
++                            std::cerr << "[DMA] ERROR: channel " << std::hex << channelBase << " source chain from "
++                                      << chainStart << " cut at tag " << tagAddr << std::dec << ": " << why << " after "
++                                      << tagsProcessed << " tags, " << chainBuf.size()
++                                      << " bytes; the rest of the chain is not transferred (" << n << " cuts so far)"
++                                      << std::endl;
++                    };
++
++                    while (true)
++                    {
++                        if (tagsProcessed >= kMaxChainTags || chainBuf.size() >= kMaxChainBytes)
++                        {
++                            chainCut("safety cap reached (a looping chain?)");
++                            break;
++                        }
+                         const uint32_t currentTagAddr = tagAddr;
+                         const bool tagInSPR = isScratchpad(tagAddr);
+                         uint32_t physTag = 0;
+@@ -1418,6 +1439,7 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
+                         }
+                         catch (...)
+                         {
++                            chainCut("tag address not translatable");
+                             break;
+                         }
+                         const uint8_t *tagBase;
+@@ -1433,7 +1455,10 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
+                             tagMax = PS2_RAM_SIZE;
+                         }
+                         if (physTag + 16 > tagMax)
++                        {
++                            chainCut("tag outside RAM/scratchpad");
+                             break;
++                        }
+ 
+                         const uint8_t *tp = tagBase + physTag;
+                         uint64_t tag = loadScalar<uint64_t>(tp, 0, 16, "dma chain tag", tagAddr);

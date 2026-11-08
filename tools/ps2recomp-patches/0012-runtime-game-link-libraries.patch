@@ -1,0 +1,27 @@
+Subject: ps2xRuntime: PS2X_GAME_LINK_LIBRARIES / PS2X_GAME_LINK_OPTIONS for the game sources
+
+Rule of Rose links the pcsx2-ror DLL's import library (PCSX2's GS behind a C API) and delay-loads it, so the runner
+still starts without it when PS2Recomp's own renderer is selected (ROR_GS=cpu).
+
+diff --git a/ps2xRuntime/CMakeLists.txt b/ps2xRuntime/CMakeLists.txt
+index d3a0584..bd68320 100644
+--- a/ps2xRuntime/CMakeLists.txt
++++ b/ps2xRuntime/CMakeLists.txt
+@@ -526,6 +526,17 @@ if(PS2X_GAME_SOURCE_DIR)
+     endif()
+ endif()
+ 
++# Libraries and link options the game sources need (Rule of Rose: the pcsx2-ror DLL's import library, delay-loaded
++# so the runner starts without it when its renderer is not selected).
++set(PS2X_GAME_LINK_LIBRARIES "" CACHE STRING "Extra libraries linked into ps2EntryRunner for the game sources")
++set(PS2X_GAME_LINK_OPTIONS "" CACHE STRING "Extra link options for ps2EntryRunner")
++if(PS2X_GAME_LINK_LIBRARIES)
++    target_link_libraries(ps2EntryRunner PRIVATE ${PS2X_GAME_LINK_LIBRARIES})
++endif()
++if(PS2X_GAME_LINK_OPTIONS)
++    target_link_options(ps2EntryRunner PRIVATE ${PS2X_GAME_LINK_OPTIONS})
++endif()
++
+ target_include_directories(ps2_runtime PUBLIC
+     ${CMAKE_CURRENT_SOURCE_DIR}/include
+     ${CMAKE_CURRENT_SOURCE_DIR}/src/lib/Kernel

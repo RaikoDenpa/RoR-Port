@@ -1,0 +1,47 @@
+Subject: ps2xRecomp: sign branches (BLEZ/BGTZ/BLTZ/BGEZ and -L/-AL) test the 64-bit GPR, as the EE does
+
+Rule of Rose port, milestone 6: the back gate's door in the fence area (a169) never answered Cross. Its regions
+have a facing check (GamMan region walk 0x1e02c8, flag 8) that wraps the angle difference with libgcc's soft-float
+doubles; __subdf3 (0x275fa8) returned 6.37917 - 2pi = -15.904 (traced: 0x4019844460000000 - 0x401921fb54442d18
+-> 0xc02fcedb7a22168c). _fpadd_parts 0x275cf0 takes the 64-bit fraction difference and negates it under
+`bltzl $v1` (0x275e74), which the translator emitted as GPR_S32(ctx, 3) < 0: a positive 64-bit fraction whose low
+word had bit 31 set was negated. The EE's sign branches compare the whole 64-bit register (EE Core Instruction Set
+Manual); BEQ/BNE and SLT/SLTI/SLTU/SLTIU here already do. 32-bit results are stored sign-extended (SET_GPR_S32 and
+SET_GPR_U32 both sign-extend), so 32-bit code branches the same as before.
+
+diff --git a/ps2xRecomp/src/lib/control_flow_emitter.cpp b/ps2xRecomp/src/lib/control_flow_emitter.cpp
+--- a/ps2xRecomp/src/lib/control_flow_emitter.cpp
++++ b/ps2xRecomp/src/lib/control_flow_emitter.cpp
+@@ -406,12 +406,15 @@
+         case OPCODE_BNE:
+         case OPCODE_BNEL:
+             return fmt::format("GPR_U64(ctx, {}) != GPR_U64(ctx, {})", rsReg, rtReg);
++        // The EE's sign branches test the whole 64-bit GPR (EE Core Instruction Set Manual, BLEZ/BGTZ/BLTZ/BGEZ:
++        // "GPR[rs] < 0" on 64-bit registers), like BEQ/BNE above. 32-bit results are kept sign-extended
++        // (SET_GPR_S32/U32), so this only differs for 64-bit values, e.g. libgcc's soft-float fractions.
+         case OPCODE_BLEZ:
+         case OPCODE_BLEZL:
+-            return fmt::format("GPR_S32(ctx, {}) <= 0", rsReg);
++            return fmt::format("GPR_S64(ctx, {}) <= 0", rsReg);
+         case OPCODE_BGTZ:
+         case OPCODE_BGTZL:
+-            return fmt::format("GPR_S32(ctx, {}) > 0", rsReg);
++            return fmt::format("GPR_S64(ctx, {}) > 0", rsReg);
+         case OPCODE_REGIMM:
+             switch (m_branchInst.rt)
+             {
+@@ -419,12 +422,12 @@
+             case REGIMM_BLTZL:
+             case REGIMM_BLTZAL:
+             case REGIMM_BLTZALL:
+-                return fmt::format("GPR_S32(ctx, {}) < 0", rsReg);
++                return fmt::format("GPR_S64(ctx, {}) < 0", rsReg);
+             case REGIMM_BGEZ:
+             case REGIMM_BGEZL:
+             case REGIMM_BGEZAL:
+             case REGIMM_BGEZALL:
+-                return fmt::format("GPR_S32(ctx, {}) >= 0", rsReg);
++                return fmt::format("GPR_S64(ctx, {}) >= 0", rsReg);
+             default:
+                 return "false";
+             }

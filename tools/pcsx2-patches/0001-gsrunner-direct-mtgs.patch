@@ -1,0 +1,144 @@
+Subject: pcsx2-gsrunner: -direct, drive MTGS from a GS dump without VMManager::Initialize
+
+Rule of Rose port, renderer plan step 0 (notes/renderer.md 6.5): settings into EmuConfig (VMManager::ApplySettings),
+MTGS::WaitForOpen, then the dump's streams fed the way GSDumpReplayer feeds them, from the CPU thread, with no VM,
+BIOS, EE/IOP or SPU2. Against PCSX2 v2.8.2 (fd9d310).
+
+diff --git a/pcsx2-gsrunner/Main.cpp b/pcsx2-gsrunner/Main.cpp
+index de624db..0e31105 100644
+--- a/pcsx2-gsrunner/Main.cpp
++++ b/pcsx2-gsrunner/Main.cpp
+@@ -34,6 +34,8 @@
+ #include "pcsx2/GS/Renderers/Common/GSDevice.h"
+ #include "pcsx2/GS/GSPerfMon.h"
+ #include "pcsx2/GSDumpReplayer.h"
++#include "pcsx2/GS/GSLzma.h"
++#include "pcsx2/Gif_Unit.h"
+ #include "pcsx2/GameList.h"
+ #include "pcsx2/Host.h"
+ #include "pcsx2/INISettingsInterface.h"
+@@ -84,6 +86,7 @@ static bool s_no_console = false;
+ // Owned by the GS thread.
+ static u32 s_dump_frame_number = 0;
+ static u32 s_loop_number = s_loop_count;
++static bool s_direct = false; // -direct: no VMManager::Initialize, the dump's streams go straight to MTGS
+ static double s_last_internal_draws = 0;
+ static double s_last_draws = 0;
+ static double s_last_render_passes = 0;
+@@ -563,6 +566,11 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
+ 
+ 				continue;
+ 			}
++			else if (CHECK_ARG("-direct"))
++			{
++				s_direct = true;
++				continue;
++			}
+ 			else if (CHECK_ARG_PARAM("-dump"))
+ 			{
+ 				std::string str(argv[++i]);
+@@ -972,6 +980,94 @@ static void CPUThreadMain(VMBootParameters* params, std::atomic<int>* ret)
+ 	GSRunner::StopPlatformMessagePump();
+ }
+ 
++// -direct (Rule of Rose port, renderer plan step 0): drive the GS thread without a VM. Settings into EmuConfig, MTGS
++// open, then the dump's streams the way GSDumpReplayer feeds them (GSDumpReplayer.cpp: LoadInitialState, SendPacketToMTGS,
++// the VSync/ReadFIFO2/Registers cases), but from this thread: no VMManager::Initialize, no BIOS, no EE/IOP/SPU2.
++static void CPUThreadMainDirect(const std::string filename, std::atomic<int>* ret)
++{
++	ret->store(EXIT_FAILURE);
++	VMManager::ApplySettings();
++
++	Error error;
++	std::unique_ptr<GSDumpFile> dump = GSDumpFile::OpenGSDump(filename.c_str(), &error);
++	if (!dump || !dump->ReadFile(&error))
++	{
++		Console.ErrorFmt("(direct) cannot read {}: {}", filename, error.GetDescription());
++		GSRunner::StopPlatformMessagePump();
++		return;
++	}
++	Console.WriteLnFmt("(direct) {}: serial {}, crc {:08X}, {} packets", filename, dump->GetSerial(), dump->GetCRC(),
++		dump->GetPackets().size());
++
++	if (!MTGS::WaitForOpen())
++	{
++		Console.Error("(direct) MTGS::WaitForOpen failed");
++		MTGS::ShutdownThread();
++		GSRunner::StopPlatformMessagePump();
++		return;
++	}
++
++	for (s32 loop = 0; loop < s_loop_count; loop++)
++	{
++		const u32 loops_left = static_cast<u32>(s_loop_count - 1 - loop);
++		MTGS::RunOnGSThread([loops_left]() { s_loop_number = loops_left; });
++
++		std::memcpy(PS2MEM_GS, dump->GetRegsData().data(), std::min<size_t>(Ps2MemSize::GSregs, dump->GetRegsData().size()));
++		freezeData fd = {static_cast<int>(dump->GetStateData().size()), const_cast<u8*>(dump->GetStateData().data())};
++		MTGS::FreezeData mfd = {&fd, 0};
++		MTGS::Freeze(FreezeAction::Load, mfd);
++		if (mfd.retval != 0)
++			Console.Error("(direct) GS state load failed");
++
++		u32 frame = 0;
++		for (const GSDumpFile::GSData& packet : dump->GetPackets())
++		{
++			switch (packet.id)
++			{
++				case GSDumpTypes::GSType::Transfer:
++				{
++					if (packet.path == GSDumpTypes::GSTransferPath::Path1Old || packet.path == GSDumpTypes::GSTransferPath::Dummy)
++						break; // our writer never emits these
++					const GIF_PATH path = static_cast<GIF_PATH>(static_cast<u8>(packet.path) - 1);
++					const u32 length = static_cast<u32>(packet.length);
++					Gif_Path& gifPath = gifUnit.gifPath[path];
++					gifPath.CopyGSPacketData(const_cast<u8*>(packet.data), length);
++					GS_Packet gsPack;
++					gsPack.offset = gifPath.curOffset;
++					gsPack.size = length;
++					gifPath.curOffset += length;
++					Gif_AddCompletedGSPacket(gsPack, path);
++					break;
++				}
++				case GSDumpTypes::GSType::VSync:
++					frame++;
++					MTGS::RunOnGSThread([frame]() { s_dump_frame_number = frame; });
++					MTGS::PostVsyncStart(false);
++					break;
++				case GSDumpTypes::GSType::ReadFIFO2:
++				{
++					u32 size;
++					std::memcpy(&size, packet.data, sizeof(size));
++					std::unique_ptr<u8[]> arr(new u8[(size + 1) * 16]);
++					MTGS::InitAndReadFIFO(arr.get(), size);
++					break;
++				}
++				case GSDumpTypes::GSType::Registers:
++					std::memcpy(PS2MEM_GS, packet.data, std::min<size_t>(packet.length, Ps2MemSize::GSregs));
++					break;
++			}
++		}
++		Console.WriteLnFmt("(direct) loop {}: {} vsyncs", loop, frame);
++	}
++
++	MTGS::WaitGS();
++	GSJoinSnapshotThreads();
++	MTGS::WaitForClose();
++	MTGS::ShutdownThread();
++	ret->store(EXIT_SUCCESS);
++	GSRunner::StopPlatformMessagePump();
++}
++
+ int main(int argc, char* argv[])
+ {
+ 	CrashHandler::Install();
+@@ -997,7 +1093,8 @@ int main(int argc, char* argv[])
+ 	GSRunner::SettingsOverride();
+ 
+ 	std::atomic<int> thread_ret;
+-	std::thread cputhread(CPUThreadMain, &params, &thread_ret);
++	std::thread cputhread = s_direct ? std::thread(CPUThreadMainDirect, params.filename, &thread_ret) :
++	                                   std::thread(CPUThreadMain, &params, &thread_ret);
+ 	GSRunner::PumpPlatformMessages(/*forever=*/true);
+ 	cputhread.join();
+ 

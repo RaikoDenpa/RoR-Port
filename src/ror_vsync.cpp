@@ -9,6 +9,7 @@
 // longer than the interval does not wait (as on hardware, where the semaphore was already signalled).
 #include "ror.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -18,6 +19,10 @@ namespace
 {
     using Clock = std::chrono::steady_clock;
     constexpr auto kVblank = std::chrono::microseconds(20000);
+    // ROR_FAST_UNTIL=F: 5 ms VBlanks until frame F (diagnostics: unattended runs reach a scene sooner). The game steps
+    // once per signalled frame and reads no host time, so a run is the same frame for frame, only faster. The same
+    // while the player holds pad.ini's fast_forward input (ror_pad.cpp).
+    constexpr auto kFastVblank = std::chrono::microseconds(5000);
 
     constexpr uint32_t kRxVblankCount = 0x2f1f90;
     constexpr uint32_t kMagVblankHandler = 0x1176ec;
@@ -36,11 +41,24 @@ namespace
     uint32_t g_handler = 0;  // INTC 2 handler installed through gs_set_vblank_handler
     uint32_t g_signals = 0;  // m_v_sema signals not yet taken by wait_vsync_swap
     uint64_t g_frames = 0;
+    uint32_t g_interval = 0; // [0x2981a0] as last seen: logged when the game changes it (TskMovie, title states)
+    // pump()'s catch-up since the last frame log: calls that ran more than one VBlank, the largest such burst, and
+    // VBlanks dropped by the resynchronisation after 8.
+    uint32_t g_bursts = 0, g_burstMax = 0, g_dropped = 0;
 
     void vblank(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         ror::wr32(rdram, kRxVblankCount, ++g_vblanks);
+        if (const uint32_t interval = ror::rd32(rdram, kVsyncInterval); interval != g_interval)
+        {
+            ror::log("VBlank interval %u -> %u (frame %llu, VBlank %u)", g_interval, interval,
+                     static_cast<unsigned long long>(g_frames), g_vblanks);
+            g_interval = interval;
+        }
         ror::gsDumpVsync();
+        ror::gsVsync(runtime);
+        ror::soundVblank();
+        ror::optionsVblank(rdram);
         if (g_handler == kMagVblankHandler)
         {
             const uint32_t count = ror::rd32(rdram, kVsyncCount) + 1;
@@ -62,22 +80,35 @@ namespace
     // replaying them all.
     void pump(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
+        static const uint64_t fastUntil = []
+        {
+            const char *env = std::getenv("ROR_FAST_UNTIL");
+            return env ? std::strtoull(env, nullptr, 10) : 0ull;
+        }();
+        const auto period = g_frames < fastUntil || ror::fastForwardHeld() ? kFastVblank : kVblank;
         const auto now = Clock::now();
         if (!g_started)
         {
             g_started = true;
-            g_next = now + kVblank;
+            g_next = now + period;
             return;
         }
-        for (int n = 0; now >= g_next; ++n)
+        int n = 0;
+        for (; now >= g_next; ++n)
         {
             if (n == 8)
             {
-                g_next = now + kVblank;
+                g_dropped += static_cast<uint32_t>((now - g_next) / period);
+                g_next = now + period;
                 break;
             }
             vblank(rdram, ctx, runtime);
-            g_next += kVblank;
+            g_next += period;
+        }
+        if (n > 1)
+        {
+            ++g_bursts;
+            g_burstMax = std::max<uint32_t>(g_burstMax, static_cast<uint32_t>(n));
         }
     }
 
@@ -203,12 +234,16 @@ void ror_wait_vsync_swap(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         const double n = g_frames == 1 ? 1.0 : 250.0;
         const uint64_t gsNs = ror::gsBackendNanos();
-        ror::log("frame %llu done (VBlank %u; per frame: game %.1f ms incl. GS raster backend %.1f ms, vsync wait %.1f ms)",
-                 static_cast<unsigned long long>(g_frames), g_vblanks, s_workMs / n, (gsNs - s_gsNs) / 1e6 / n, s_waitMs / n);
+        ror::log("frame %llu done (VBlank %u; per frame: game %.1f ms incl. GS raster backend %.1f ms, vsync wait %.1f ms; "
+                 "catch-up: %u bursts, largest %u VBlanks, %u dropped)",
+                 static_cast<unsigned long long>(g_frames), g_vblanks, s_workMs / n, (gsNs - s_gsNs) / 1e6 / n, s_waitMs / n,
+                 g_bursts, g_burstMax, g_dropped);
         s_workMs = s_waitMs = 0;
         s_gsNs = gsNs;
+        g_bursts = g_burstMax = g_dropped = 0;
     }
     ror::gsFrameMark(runtime, g_frames, true);
+    ror::vif1DumpFrame(rdram, runtime, self, g_frames);
     static const uint64_t s_profileFrame = []
     {
         const char *env = std::getenv("ROR_PROFILE"); // "FRAME:SECONDS"
@@ -218,6 +253,28 @@ void ror_wait_vsync_swap(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         const char *colon = std::strchr(std::getenv("ROR_PROFILE"), ':');
         ror::profileStart(colon ? std::atof(colon + 1) : 10.0, "profile.tsv");
+    }
+    // ROR_GAME_SCREENSHOT=F: the game's own debug screenshot. MagSystem::packets_end 0x1187f0 calls
+    // MagSystem::screenshot 0x11860c when this+0x38 is set (file name at this+0x34): a 512 x 448 BMP of the displayed
+    // frame read back with sceGsExecStoreImage, the game's only GS->host read (renderer plan step 4). Written to
+    // host/ror_shot_F.bmp in the run folder (ror_sceOpen).
+    static const uint64_t s_gameShot = []
+    {
+        const char *env = std::getenv("ROR_GAME_SCREENSHOT");
+        return env ? std::strtoull(env, nullptr, 10) : 0ull;
+    }();
+    if (s_gameShot && g_frames == s_gameShot)
+    {
+        const std::string name = "host0:ror_shot_" + std::to_string(g_frames) + ".bmp";
+        const uint32_t p = runtime->guestMalloc(static_cast<uint32_t>(name.size() + 1), 16u);
+        if (uint8_t *s = p ? ror::ptr(rdram, p, static_cast<uint32_t>(name.size() + 1)) : nullptr)
+        {
+            std::memcpy(s, name.c_str(), name.size() + 1);
+            ror::log("game screenshot requested: %s (MagSystem %08x, file name pointer was %08x)", name.c_str(), self,
+                     ror::rd32(rdram, self + 0x34));
+            ror::wr32(rdram, self + 0x34, p);
+            ror::wr32(rdram, self + 0x38, 1);
+        }
     }
     if (maxFrames() && g_frames >= maxFrames())
     {

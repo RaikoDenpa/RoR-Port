@@ -1,0 +1,43 @@
+Subject: ps2xRuntime: VIF1 sink (another VIF1 + VU1 takes the stream instead of the decode)
+
+For the Rule of Rose port's renderer plan step 3 (option C): PCSX2's VIF1 + microVU1 (MTVU) + GS render, fed from
+this runtime's DMA channel 1. PS2Memory::setVif1Sink: every stream processVIF1Data receives (DMA channel 1 chains and
+transfers, VIF1 FIFO writes) goes to the sink after the observer (patch 0010), and this runtime's VIF1 interpreter
+and VU1 skip it. The DMA channel itself completes as before.
+
+diff --git a/ps2xRuntime/include/runtime/ps2_memory.h b/ps2xRuntime/include/runtime/ps2_memory.h
+--- a/ps2xRuntime/include/runtime/ps2_memory.h
++++ b/ps2xRuntime/include/runtime/ps2_memory.h
+@@ -343,6 +343,9 @@
+     // decoded: the VIF1 input, e.g. for dumps replayed through another VIF1/VU1.
+     using Vif1ObserverFn = std::function<void(const uint8_t *, uint32_t)>;
+     void setVif1Observer(Vif1ObserverFn fn) { m_vif1Observer = std::move(fn); }
++    // Takes every stream processVIF1Data receives (after the observer) in place of the decode: this runtime's VIF1
++    // and VU1 then do nothing with it, another VIF1 + VU1 (e.g. PCSX2's) renders.
++    void setVif1Sink(Vif1ObserverFn fn) { m_vif1Sink = std::move(fn); }
+     void processGIFPacket(uint32_t srcPhysAddr, uint32_t qwCount);
+     void processGIFPacket(const uint8_t *data, uint32_t sizeBytes);
+     bool tryProcessNativeGifImageUploadChain(GS &gs, uint32_t tadr, uint32_t chcr);
+@@ -418,6 +421,7 @@
+     uint32_t m_vif1PendingPath2ImageQwc = 0u;
+     uint32_t m_vif1PendingDirectQwc = 0u; // DIRECT payload still to come when a transfer ended inside it
+     Vif1ObserverFn m_vif1Observer;
++    Vif1ObserverFn m_vif1Sink;
+     bool m_vif1PendingPath2DirectHl = false;
+     std::vector<std::vector<uint8_t>> m_path3MaskedFifo;
+ 
+diff --git a/ps2xRuntime/src/lib/ps2_vif1_interpreter.cpp b/ps2xRuntime/src/lib/ps2_vif1_interpreter.cpp
+--- a/ps2xRuntime/src/lib/ps2_vif1_interpreter.cpp
++++ b/ps2xRuntime/src/lib/ps2_vif1_interpreter.cpp
+@@ -327,6 +327,11 @@
+         return;
+     if (m_vif1Observer)
+         m_vif1Observer(data, sizeBytes);
++    if (m_vif1Sink)
++    {
++        m_vif1Sink(data, sizeBytes);
++        return;
++    }
+ 
+     uint32_t pos = 0;
+ 

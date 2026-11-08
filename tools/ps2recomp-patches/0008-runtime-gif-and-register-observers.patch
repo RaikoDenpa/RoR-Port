@@ -1,0 +1,180 @@
+Subject: ps2xRuntime: observers for the GIF stream per path and for register writes outside it
+
+GifArbiter::setObserver sees every packet just before the GS processes it, in processing order, with its
+path. The data is the path's GIF stream: a packet can start with bytes the runtime added (streamOffset), the
+GIFtag the VIF1 interpreter puts in front of an IMAGE transfer that continues in a later DIRECT; the observer
+does not see those. GS::setRegisterObserver sees GS::writeRegister calls, the register writes runtime handlers
+make outside the GIF stream (sceGsPutDrawEnv). Rule of Rose uses both to write PCSX2 GS dumps.
+
+diff --git a/ps2xRuntime/include/runtime/gs/gs_frontend.h b/ps2xRuntime/include/runtime/gs/gs_frontend.h
+index 4c3f641..07c5514 100644
+--- a/ps2xRuntime/include/runtime/gs/gs_frontend.h
++++ b/ps2xRuntime/include/runtime/gs/gs_frontend.h
+@@ -4,6 +4,7 @@
+ #include <array>
+ #include <cstddef>
+ #include <cstdint>
++#include <functional>
+ #include <memory>
+ #include <mutex>
+ #include <vector>
+@@ -115,6 +116,9 @@ public:
+                            const uint8_t *data,
+                            uint32_t sizeBytes);
+     void writeRegister(uint8_t regAddr, uint64_t value);
++    // Sees each writeRegister call (register writes from runtime handlers, outside the GIF stream), after the write.
++    using RegisterObserverFn = std::function<void(uint8_t regAddr, uint64_t value)>;
++    void setRegisterObserver(RegisterObserverFn fn) { m_registerObserver = std::move(fn); }
+ 
+     const uint8_t *lockDisplaySnapshot(uint32_t &outSize);
+     void unlockDisplaySnapshot();
+@@ -180,6 +184,7 @@ private:
+     uint8_t *m_localMemoryStorage = nullptr;
+     uint32_t m_localMemorySize = 0u;
+     struct GSRegisters *m_privRegs = nullptr;
++    RegisterObserverFn m_registerObserver;
+     mutable std::recursive_mutex m_stateMutex;
+     mutable std::mutex m_backendLifetimeMutex;
+     mutable std::mutex m_presentationMutex;
+diff --git a/ps2xRuntime/include/runtime/gs/ps2_gif_arbiter.h b/ps2xRuntime/include/runtime/gs/ps2_gif_arbiter.h
+index 2012083..f11c81c 100644
+--- a/ps2xRuntime/include/runtime/gs/ps2_gif_arbiter.h
++++ b/ps2xRuntime/include/runtime/gs/ps2_gif_arbiter.h
+@@ -17,6 +17,7 @@ struct GifArbiterPacket
+     GifPathId pathId;
+     bool path2DirectHl = false;
+     bool path3Image = false;
++    uint32_t streamOffset = 0u; // leading bytes the runtime added (not part of the path's GIF stream)
+     std::vector<uint8_t> data;
+ };
+ 
+@@ -24,19 +25,26 @@ class GifArbiter
+ {
+ public:
+     using ProcessPacketFn = std::function<void(const uint8_t *, uint32_t)>;
++    // Sees every packet just before the GS processes it, in processing order, with its path. The data is that
++    // path's GIF stream: without the streamOffset bytes a packet starts with (the GIFtag the VIF1 interpreter puts in
++    // front of an IMAGE transfer that continues in a later DIRECT). For tools such as GS dump writers.
++    using ObserverFn = std::function<void(GifPathId, const uint8_t *, uint32_t)>;
+ 
+     GifArbiter() = default;
+     explicit GifArbiter(ProcessPacketFn processFn);
+ 
+     void setProcessPacketFn(ProcessPacketFn fn) { m_processFn = std::move(fn); }
++    void setObserver(ObserverFn fn) { m_observerFn = std::move(fn); }
+ 
+-    void submit(GifPathId pathId, const uint8_t *data, uint32_t sizeBytes, bool path2DirectHl = false);
++    void submit(GifPathId pathId, const uint8_t *data, uint32_t sizeBytes, bool path2DirectHl = false,
++                uint32_t streamOffset = 0u);
+ 
+     void drain();
+     bool empty() const { return m_queue.empty(); }
+ 
+ private:
+     ProcessPacketFn m_processFn;
++    ObserverFn m_observerFn;
+     std::vector<GifArbiterPacket> m_queue;
+ 
+     static bool isImagePacket(const uint8_t *data, uint32_t sizeBytes);
+diff --git a/ps2xRuntime/include/runtime/ps2_memory.h b/ps2xRuntime/include/runtime/ps2_memory.h
+index 16a29aa..c773590 100644
+--- a/ps2xRuntime/include/runtime/ps2_memory.h
++++ b/ps2xRuntime/include/runtime/ps2_memory.h
+@@ -334,7 +334,9 @@ public:
+     bool isPath3Masked() const { return m_path3Masked; }
+     void flushMaskedPath3Packets(bool drainImmediately = true);
+ 
+-    void submitGifPacket(GifPathId pathId, const uint8_t *data, uint32_t sizeBytes, bool drainImmediately = true, bool path2DirectHl = false);
++    // streamOffset: leading bytes of data that are not part of the path's GIF stream (GifArbiter::ObserverFn).
++    void submitGifPacket(GifPathId pathId, const uint8_t *data, uint32_t sizeBytes, bool drainImmediately = true, bool path2DirectHl = false,
++                         uint32_t streamOffset = 0u);
+     // A DIRECT/DIRECTHL payload: continues a GIF IMAGE transfer left pending by an earlier payload, then submits the rest.
+     void submitVif1DirectPayload(const uint8_t *data, uint32_t qwCount, bool directHl);
+     void processGIFPacket(uint32_t srcPhysAddr, uint32_t qwCount);
+diff --git a/ps2xRuntime/src/lib/gs/gs_frontend.cpp b/ps2xRuntime/src/lib/gs/gs_frontend.cpp
+index 9281d5f..c7d5dc6 100644
+--- a/ps2xRuntime/src/lib/gs/gs_frontend.cpp
++++ b/ps2xRuntime/src/lib/gs/gs_frontend.cpp
+@@ -1062,8 +1062,12 @@ void GS::writeRegisterPacked(uint8_t regDesc, uint64_t lo, uint64_t hi)
+ 
+ void GS::writeRegister(uint8_t regAddr, uint64_t value)
+ {
+-    std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
+-    writeRegisterUnlocked(regAddr, value);
++    {
++        std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
++        writeRegisterUnlocked(regAddr, value);
++    }
++    if (m_registerObserver)
++        m_registerObserver(regAddr, value);
+ }
+ 
+ void GS::writeRegisterUnlocked(uint8_t regAddr, uint64_t value)
+diff --git a/ps2xRuntime/src/lib/gs/ps2_gif_arbiter.cpp b/ps2xRuntime/src/lib/gs/ps2_gif_arbiter.cpp
+index c0507c7..2b8f899 100644
+--- a/ps2xRuntime/src/lib/gs/ps2_gif_arbiter.cpp
++++ b/ps2xRuntime/src/lib/gs/ps2_gif_arbiter.cpp
+@@ -19,7 +19,8 @@ bool GifArbiter::isImagePacket(const uint8_t *data, uint32_t sizeBytes)
+     return flg == 2u || flg == 3u;
+ }
+ 
+-void GifArbiter::submit(GifPathId pathId, const uint8_t *data, uint32_t sizeBytes, bool path2DirectHl)
++void GifArbiter::submit(GifPathId pathId, const uint8_t *data, uint32_t sizeBytes, bool path2DirectHl,
++                        uint32_t streamOffset)
+ {
+     if (!data || sizeBytes < 16 || !m_processFn)
+         return;
+@@ -28,6 +29,7 @@ void GifArbiter::submit(GifPathId pathId, const uint8_t *data, uint32_t sizeByte
+     pkt.pathId = pathId;
+     pkt.path2DirectHl = (pathId == GifPathId::Path2) && path2DirectHl;
+     pkt.path3Image = (pathId == GifPathId::Path3) && isImagePacket(data, sizeBytes);
++    pkt.streamOffset = std::min(streamOffset, sizeBytes);
+     pkt.data.resize(sizeBytes);
+     std::memcpy(pkt.data.data(), data, sizeBytes);
+     m_queue.push_back(std::move(pkt));
+@@ -57,6 +59,9 @@ void GifArbiter::drain()
+         auto &pkt = m_queue[i];
+         if (!pkt.data.empty())
+         {
++            if (m_observerFn && pkt.data.size() > pkt.streamOffset)
++                m_observerFn(pkt.pathId, pkt.data.data() + pkt.streamOffset,
++                             static_cast<uint32_t>(pkt.data.size() - pkt.streamOffset));
+             m_processFn(pkt.data.data(), static_cast<uint32_t>(pkt.data.size()));
+         }
+     }
+diff --git a/ps2xRuntime/src/lib/ps2_memory.cpp b/ps2xRuntime/src/lib/ps2_memory.cpp
+index ca1f00b..cf17154 100644
+--- a/ps2xRuntime/src/lib/ps2_memory.cpp
++++ b/ps2xRuntime/src/lib/ps2_memory.cpp
+@@ -1945,7 +1945,8 @@ void PS2Memory::flushMaskedPath3Packets(bool drainImmediately)
+         m_gifArbiter->drain();
+ }
+ 
+-void PS2Memory::submitGifPacket(GifPathId pathId, const uint8_t *data, uint32_t sizeBytes, bool drainImmediately, bool path2DirectHl)
++void PS2Memory::submitGifPacket(GifPathId pathId, const uint8_t *data, uint32_t sizeBytes, bool drainImmediately, bool path2DirectHl,
++                                uint32_t streamOffset)
+ {
+     if (!data || sizeBytes < 16)
+         return;
+@@ -1961,7 +1962,7 @@ void PS2Memory::submitGifPacket(GifPathId pathId, const uint8_t *data, uint32_t
+     }
+ 
+     if (m_gifArbiter)
+-        m_gifArbiter->submit(pathId, data, sizeBytes, path2DirectHl);
++        m_gifArbiter->submit(pathId, data, sizeBytes, path2DirectHl, streamOffset);
+     else if (m_gifPacketCallback)
+         m_gifPacketCallback(data, sizeBytes);
+ 
+diff --git a/ps2xRuntime/src/lib/ps2_vif1_interpreter.cpp b/ps2xRuntime/src/lib/ps2_vif1_interpreter.cpp
+index 4f78338..075cf5b 100644
+--- a/ps2xRuntime/src/lib/ps2_vif1_interpreter.cpp
++++ b/ps2xRuntime/src/lib/ps2_vif1_interpreter.cpp
+@@ -295,7 +295,7 @@ void PS2Memory::submitVif1DirectPayload(const uint8_t *data, uint32_t qwCount, b
+             (static_cast<uint64_t>(kGifFmtImage) << 58);
+         std::memcpy(imagePacket.data(), &imageTag, sizeof(imageTag));
+         std::memcpy(imagePacket.data() + 16u, data, static_cast<size_t>(chunkQw) * 16u);
+-        submitGifPacket(GifPathId::Path2, imagePacket.data(), static_cast<uint32_t>(imagePacket.size()), true, directHl);
++        submitGifPacket(GifPathId::Path2, imagePacket.data(), static_cast<uint32_t>(imagePacket.size()), true, directHl, 16u);
+ 
+         data += chunkQw * 16u;
+         qwCount -= chunkQw;

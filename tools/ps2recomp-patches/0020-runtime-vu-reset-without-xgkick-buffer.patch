@@ -1,0 +1,29 @@
+Subject: ps2xRuntime: the VU interpreter's reset no longer zeroes the 64 KB XGKICK packet buffer
+
+Rule of Rose port, renderer plan step 5 (profile on the A164 road, ROR_GS=pcsx2): VU emulation was 22.7 of the
+32 ms of game work per frame, half of it VU1Interpreter::resetScheduler. The VU0 microprograms (vcallms in the
+skinning 0x227598 / 0x227a18, thousands per frame) run on a VU1Interpreter, and every start reset m_xgkick = {},
+zeroing its 64 KB packet buffer. The buffer is always written before it is read (copiedBytes, totalBytes), so only
+the transfer state is reset now.
+
+diff --git a/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp b/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp
+--- a/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp
++++ b/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp
+@@ -73,7 +73,16 @@
+     m_vfWritePipeline = {};
+     m_viWritePipeline = {};
+     m_accWritePipeline = {};
+-    m_xgkick = {};
++    // Not m_xgkick = {}: that zeroes its 64 KB packet buffer on every program start (VU0 microprograms too, thousands
++    // per frame), and the buffer is always written before it is read (copiedBytes / totalBytes).
++    m_xgkick.sourceAddress = 0;
++    m_xgkick.totalBytes = 0;
++    m_xgkick.copiedBytes = 0;
++    m_xgkick.currentTagEnd = 0;
++    m_xgkick.cycleCredit = 0;
++    m_xgkick.issueCycle = 0;
++    m_xgkick.active = false;
++    m_xgkick.currentTagEop = false;
+     m_vfReady = {};
+     m_viReady = {};
+     m_accReady = {};

@@ -1,3 +1,4 @@
+# Game data — never commit (see CLAUDE.md)
 /disc/
 *.iso
 *.ISO
@@ -31,8 +32,11 @@ __pycache__/
 *.pyc
 .venv/
 
+
+
 # Editors / OS
 .vscode/
 .idea/
 Thumbs.db
 desktop.ini
+build/

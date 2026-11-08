@@ -1,0 +1,59 @@
+Subject: ps2xRecomp: keep VU0 vf0 constant; flags from COP2 operations into vf0
+
+vf0 is hardwired to (0, 0, 0, 1) and writes to it are discarded. Rule of Rose writes it only to get the flags
+(0x236a10: `vsub.xyz vf0, vf5, vf11; cfc2 $t0, $vi16; andi $t0, 2`, a separating-axis test; also 0x233208, 0x236978,
+0x236c10). The generated code stored the result in vu0_vf[0] and never set the flags, so vf0.xyz held garbage
+afterwards (the unit matrix 0x239268 is built from vf0 with vmr32, so "identity" became a garbage matrix) and the
+tests read a stale status. Now an instruction whose translation writes vu0_vf[0] is followed by the restore; a COP2
+macro operation into vf0 first sets the MAC (Z, S over its dest lanes) and status (Z, S, sticky ZS, SS) flags.
+diff --git a/ps2xRecomp/src/lib/code_generator.cpp b/ps2xRecomp/src/lib/code_generator.cpp
+index 68b0984..802447c 100644
+--- a/ps2xRecomp/src/lib/code_generator.cpp
++++ b/ps2xRecomp/src/lib/code_generator.cpp
+@@ -50,6 +50,31 @@ namespace ps2recomp
+ namespace ps2recomp
+ {
+ 
++    // VU0's vf0 is hardwired to (0, 0, 0, 1): writes to it are discarded. Code writes it only for the flags (e.g.
++    // `vsub.xyz vf0, a, b` then `cfc2 vi16`), so a COP2 macro operation with destination vf0 sets the MAC flags (Z and
++    // S over its dest lanes) and the status flags (Z, S and their sticky bits) from its result, then vf0 is restored.
++    // LQC2 / QMTC2 to vf0 only restore it.
++    static std::string keepVf0Constant(const Instruction &inst, std::string code)
++    {
++        if (code.find("ctx->vu0_vf[0] = ") == std::string::npos)
++            return code;
++        if ((inst.raw >> 26) == OPCODE_COP2 && (inst.raw & (1u << 25)))
++        {
++            const uint32_t dest = (inst.raw >> 21) & 0xfu; // x = bit 3 ... w = bit 0, as in the MAC flag nibbles
++            code += fmt::format(
++                " {{ auto rev4 = [](uint32_t m) {{ return ((m & 1u) << 3) | ((m & 2u) << 1) | ((m & 4u) >> 1) | ((m & 8u) >> 3); }}; "
++                "const uint32_t sgn = rev4(static_cast<uint32_t>(_mm_movemask_ps(ctx->vu0_vf[0]))); "
++                "const uint32_t zer = rev4(static_cast<uint32_t>(_mm_movemask_ps(_mm_cmpeq_ps(ctx->vu0_vf[0], _mm_setzero_ps())))); "
++                "const uint32_t mac = ((sgn << 4) | zer) & 0x{:x}u; "
++                "const uint32_t zs = ((mac & 0xfu) ? 1u : 0u) | ((mac & 0xf0u) ? 2u : 0u); "
++                "ctx->vu0_mac_flags = mac; "
++                "ctx->vu0_status = static_cast<uint16_t>((ctx->vu0_status & ~0xfu) | zs | (zs << 6)); }}",
++                dest * 0x11u);
++        }
++        code += " ctx->vu0_vf[0] = _mm_set_ps(1.0f, 0.0f, 0.0f, 0.0f);";
++        return code;
++    }
++
+     static std::string sanitizeIdentifierBody(const std::string &name)
+     {
+         std::string sanitized;
+@@ -225,12 +250,12 @@ namespace ps2recomp
+ 
+     std::string CodeGenerator::translateInstruction(const Instruction &inst)
+     {
+-        return InstructionTranslator(*this).translate(inst, {});
++        return keepVf0Constant(inst, InstructionTranslator(*this).translate(inst, {}));
+     }
+ 
+     std::string CodeGenerator::translateInstruction(const Instruction &inst, const MemoryAccessHint &memoryHint)
+     {
+-        return InstructionTranslator(*this).translate(inst, memoryHint);
++        return keepVf0Constant(inst, InstructionTranslator(*this).translate(inst, memoryHint));
+     }
+ 
+     std::string CodeGenerator::translateSpecialInstruction(const Instruction &inst)

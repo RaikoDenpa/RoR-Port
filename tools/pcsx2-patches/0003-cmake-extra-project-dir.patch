@@ -1,0 +1,24 @@
+Subject: CMake: PCSX2_EXTRA_PROJECT_DIR, an extra project built against the core
+
+Rule of Rose port (notes/renderer.md 6.5a): the pcsx2-ror DLL (host layer + C API) is built inside this CMake so it
+gets exactly the core's flags and links PCSX2 + PCSX2_FLAGS as pcsx2-gsrunner does; its sources stay in the port
+repository. Against PCSX2 v2.8.2 (fd9d310).
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index b0c3945..3ba427b 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -70,6 +70,13 @@ else()
+ 	add_subdirectory(pcsx2-gsrunner EXCLUDE_FROM_ALL)
+ endif()
+ 
++# An extra project built against the core with PCSX2's flags (the Rule of Rose port's pcsx2-ror DLL; its
++# sources live outside this tree).
++set(PCSX2_EXTRA_PROJECT_DIR "" CACHE PATH "Directory of an extra CMake project to build against the core")
++if(PCSX2_EXTRA_PROJECT_DIR)
++	add_subdirectory("${PCSX2_EXTRA_PROJECT_DIR}" "${CMAKE_BINARY_DIR}/extra")
++endif()
++
+ #-------------------------------------------------------------------------------
+ if(NOT IS_SUPPORTED_COMPILER)
+ 	message(WARNING "

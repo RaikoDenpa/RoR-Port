@@ -1,0 +1,57 @@
+Subject: ps2xRuntime: VIF UNPACK takes STCYCL CL 0 as is (filling write without data)
+
+UNPACK forced CL 0 to 1 (and WL 0 to 1). With CL < WL that is a filling write, and the game's masked
+UNPACKs after STCYCL CL 0 WL 2 carry no data at all: every value comes from ROW/COL. Forcing CL to 1 made the
+interpreter read one vector (16 bytes) of the following VIFcodes as data, slip, and skip opcodes until it
+resynchronised, losing UNPACKs and MSCALs on the way. Rule of Rose's A164 event uses 1,790 of these per frame:
+nearly every VU1 primitive came out with Z -48 and off-screen coordinates.
+
+Now as PCSX2 (vifUnpackSetup): WL 0 means 256, CL is used as is, a filling write reads CL * (NUM / WL) +
+min(NUM % WL, CL) vectors, and a VIF1 UNPACK without data still writes its NUM vectors from the mask.
+
+diff --git a/ps2xRuntime/src/lib/ps2_vif1_interpreter.cpp b/ps2xRuntime/src/lib/ps2_vif1_interpreter.cpp
+index 075cf5b..fceea0e 100644
+--- a/ps2xRuntime/src/lib/ps2_vif1_interpreter.cpp
++++ b/ps2xRuntime/src/lib/ps2_vif1_interpreter.cpp
+@@ -217,12 +217,12 @@ void PS2Memory::processVIF0Data(const uint8_t *data, uint32_t sizeBytes)
+             const int bitsPerVector = (vl == 3u && vn == 3u) ? 16 : (components * bitsPerComponent);
+             uint32_t bytesPerVector = static_cast<uint32_t>((bitsPerVector + 7) / 8);
+             const uint32_t writeVectorCount = (num == 0u) ? 256u : static_cast<uint32_t>(num);
++            // STCYCL: WL 0 means 256; CL is used as is (PCSX2 vifUnpackSetup), so CL < WL is a filling write that reads
++            // CL * (NUM / WL) + min(NUM % WL, CL) vectors: with CL 0 none, every value comes from the mask (ROW/COL).
+             uint32_t cl = vif0_regs.cycle & 0xFFu;
+             uint32_t wl = (vif0_regs.cycle >> 8) & 0xFFu;
+-            if (cl == 0u)
+-                cl = 1u;
+             if (wl == 0u)
+-                wl = 1u;
++                wl = 256u;
+             uint32_t sourceVectorCount = writeVectorCount;
+             if (cl < wl)
+             {
+@@ -558,12 +558,12 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
+             const uint32_t writeVectorCount = (num == 0u) ? 256u : static_cast<uint32_t>(num);
+ 
+             // STCYCL controls write cycles for UNPACK.
++            // STCYCL: WL 0 means 256; CL is used as is (PCSX2 vifUnpackSetup), so CL < WL is a filling write that reads
++            // CL * (NUM / WL) + min(NUM % WL, CL) vectors: with CL 0 none, every value comes from the mask (ROW/COL).
+             uint32_t cl = vif1_regs.cycle & 0xFFu;
+             uint32_t wl = (vif1_regs.cycle >> 8) & 0xFFu;
+-            if (cl == 0u)
+-                cl = 1u;
+             if (wl == 0u)
+-                wl = 1u;
++                wl = 256u;
+ 
+             uint32_t sourceVectorCount = writeVectorCount;
+             if (cl < wl)
+@@ -584,7 +584,8 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
+ 
+             const bool zeroExtend = (imm & 0x4000u) != 0u;
+ 
+-            if (m_vu1Data && totalBytes > 0 && pos + totalBytes <= sizeBytes)
++            // A filling write with CL 0 has no data (totalBytes 0) but still writes NUM vectors.
++            if (m_vu1Data && pos + totalBytes <= sizeBytes)
+             {
+                 const uint8_t *srcBase = data + pos;
+                 uint32_t srcIndex = 0u;

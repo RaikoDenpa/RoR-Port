@@ -105,7 +105,9 @@ git clone --recurse-submodules https://github.com/RaikoDenpa/RoR-Port.git
 # 1. Extract your disc dump into extracted/disc/  (python tools/iso9660.py)
 # 2. Rebuild the Ghidra project and names
 tools/ghidra_scripts/run_all.ps1 -Fresh
-# 3. Dependencies (once): PCSX2's Windows dependencies, FFmpeg's decoder DLLs (pinned, checksummed)
+# 3. Worktrees with our patches, then the dependencies (once): PCSX2's Windows dependencies and FFmpeg's
+#    decoder DLLs (pinned, checksummed; FFmpeg's step needs 7-Zip's 7zr.exe in tools/bin)
+python tools/port/build.py setup
 python tools/port/build.py pcsx2-deps
 python tools/port/build.py ffmpeg
 # 4. Export from Ghidra, then setup + config + recompile + PCSX2 + build

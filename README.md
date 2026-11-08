@@ -3,7 +3,7 @@
 A native PC port of *Rule of Rose* (PlayStation 2, Punchline, 2006), built by reverse engineering the
 PAL release (`SLES_542.18`) and statically recompiling it to C++.
 
-> **Private, personal, non-commercial project.** This repository contains **no game data**: no disc image,
+> non-commercial project.** This repository contains **no game data**: no disc image,
 > executable, assets, or text extracted from the game. Everything here is original code, tools and research
 > notes. Running the port requires your own legally dumped copy of the game.
 
@@ -16,9 +16,9 @@ PAL release (`SLES_542.18`) and statically recompiling it to C++.
 | 1 | Recompiled game builds | ✅ |
 | 2 | Boots to `main` | ✅ |
 | 3 | Main loop runs, first frames drawn | ✅ |
-| 4 | Title screen with input | 🟡 Language select, publisher logos, disclaimer and Title menu reached; attract-mode movie stalls on a placeholder |
-| 5 | First area: Jennifer on screen | ⬜ |
-| 6 | Playable: walking, menus, Brown, saving | ⬜ |
+| 4 | Title screen with input | ✅ Language select, publisher logos, disclaimer and Title menu reached; attract-mode movie stalls on a placeholder |
+| 5 | First area: Jennifer on screen | ✅ |
+| 6 | Playable: walking, menus, Brown, saving | ✅ |
 | 7 | Full playthrough | ⬜ |
 
 **Current focus:** getting past the title into a new

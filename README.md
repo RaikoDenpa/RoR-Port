@@ -3,9 +3,9 @@
 A native PC port of *Rule of Rose* (PlayStation 2, Punchline, 2006), built by reverse engineering the
 PAL release (`SLES_542.18`) and statically recompiling it to C++.
 
-> non-commercial project.** This repository contains **no game data**: no disc image,
-> executable, assets, or text extracted from the game. Everything here is original code, tools and research
-> notes. Running the port requires your own legally dumped copy of the game.
+> **A non-commercial fan project.** This repository contains **no game data**: no disc image, executable,
+> assets, or text extracted from the game. Everything here is original code and tools. Running the port
+> requires your own legally dumped copy of the game (PAL, SLES-54218).
 
 ---
 
@@ -16,14 +16,16 @@ PAL release (`SLES_542.18`) and statically recompiling it to C++.
 | 1 | Recompiled game builds | ✅ |
 | 2 | Boots to `main` | ✅ |
 | 3 | Main loop runs, first frames drawn | ✅ |
-| 4 | Title screen with input | ✅ Language select, publisher logos, disclaimer and Title menu reached; attract-mode movie stalls on a placeholder |
+| 4 | Title screen with input | ✅ language select, logos, attract movie, Title menu |
 | 5 | First area: Jennifer on screen | ✅ |
-| 6 | Playable: walking, menus, Brown, saving | ✅ |
-| 7 | Full playthrough | ⬜ |
+| 6 | Playable: walking, menus, Brown, saving | ✅ menus, items, Brown's Find, saving and loading, combat |
+| 7 | Full playthrough | 🟡 chapters 1 and 2 played through; chapter 3 up to the end of the rabbit chase |
 
-**Current focus:** getting past the title into a new
-game, and integrating PCSX2's GS renderer. The current software GS is about 96% of frame time, so the port
-runs at roughly half speed. See [`notes/renderer.md`](notes/renderer.md).
+What works today: the story with its in-engine events, movies with sound, music, voices and sound effects,
+fighting (with enemies grabbing, getting knocked down and the game-over screen), saving to and loading from a
+memory card in a host folder, and a launcher with display, graphics and sound settings.
+
+**Current focus:** the rest of chapter 3 (its boss fight) and the later chapters, plus feedback from playtesters.
 
 ## How it works
 
@@ -40,6 +42,7 @@ SLES_542.18 ──► Ghidra analysis ──► function list, names, jump table
                                                                    │
               src/ (seam overrides) + PS2Recomp runtime + patches ─┴─► ps2EntryRunner.exe
                                                                    │
+           pcsx2-ror.dll (PCSX2's GS, VU1, VIF1) ◄──────────────────┤
                                    your own disc dump (read at runtime)
 ```
 
@@ -47,45 +50,47 @@ SLES_542.18 ──► Ghidra analysis ──► function list, names, jump table
 
 | Seam | Replaced at | State |
 |---|---|---|
-| File I/O | `rxFile*` API + libkernl `sceOpen`/`sceRead` | ✅ host files from your disc dump |
-| Threads / vsync | RX thread layer, `MagSystem::wait_vsync_swap` | ✅ single-threaded, 25 Hz host frame loop |
-| Input | libpad2/libdbc raw pad data | ✅ keyboard + gamepad (`config/pad.ini`) |
-| Rendering | VIF1 → GS | 🟡 PS2Recomp's software GS; PCSX2 GS planned |
-| Movies | `TskMovie` / rxmpeg | ⬜ placeholder (skipped); ffmpeg planned |
-| Sound | rxsnd client API (26 functions) | ⬜ placeholder (silent) |
-| Memory card | libmc API | ⬜ placeholder (empty card); host files planned |
+| File I/O | `rxFile*` API (including the streaming ring) + libkernl `sceOpen`/`sceRead` | ✅ host files from your disc dump |
+| Threads / vsync | RX thread layer, the VBlank interrupt, `MagSystem::wait_vsync_swap` | ✅ 50 Hz VBlank clock (PAL), the game's 25 fps |
+| Input | libpad2 raw pad data | ✅ keyboard + gamepad (`config/pad.ini`) |
+| Rendering | VIF1 → VU1 → GS | ✅ PCSX2's VIF1, microVU1 and GS in `pcsx2-ror.dll` (D3D11/12, Vulkan, OpenGL; upscaling); PS2Recomp's software GS as a fallback |
+| Movies | rxmpeg stream and decode functions | ✅ our player: our PSS demuxer, FFmpeg's MPEG-2 decoder, our PS-ADPCM audio |
+| Sound | rxsnd client API (the IOP sound driver's calls) | ✅ our driver: XVAB sound-effect banks, music and voice streams, volumes, mixed at 48 kHz |
+| Memory card | libmc API | ✅ host folders (`user\memcard` in the launcher's package) |
+| Window | raylib window + PCSX2's swap chain | ✅ resizable, fullscreen (F11), aspect ratio from PCSX2's settings |
+
+## Playing
+
+The port is distributed only as private playtest builds to people who own the game. `python tools/port/build.py
+dist` makes that package: `RuleOfRose.exe` (the launcher), the runner and its DLLs, and no game files.
+
+The launcher is a settings window: display (window or fullscreen, window size, 4:3 or stretched), graphics
+(renderer, internal resolution, texture filtering), game (skip the intro, movies, volume), controls, saves and
+logs. The first time you press Play it asks for your disc image, checks that it is the PAL SLES-54218 release,
+and copies the game's files next to it.
+
+In the game: **F11** toggles fullscreen, holding **F** fast-forwards (4x), **Start** skips movies. The default
+keys are in `config/pad.ini` (WASD to move, X/Space for Cross, C/Backspace for Circle, Enter for Start, Q/E for
+L1/R1); a gamepad works out of the box.
 
 ## Repository layout
 
 ```
-notes/                    research: one file per subsystem (start with engine.md and port.md)
-  formats/                file formats: RTPK archives, I3D models, TIM2, PSS, STR, XVAB, ELFR scripts
-src/                      the port: game overrides at each seam (C++)
-config/pad.ini            input mapping
+src/                      the port: game overrides at each seam (C++), window and options
+pcsx2-ror/                the PCSX2-side library (pcsx2-ror.dll): GS/VU1/VIF1 host layer and its C API
+launcher/                 RuleOfRose.exe: the settings window, disc-image check and extraction, tester README
+config/                   pad.ini (input mapping), gs.ini (PCSX2's GS settings)
 tools/
-  port/                   config generator, build/run driver, profiler and GS trace readers
+  port/                   config generator, build/run/package driver, play and regression tools, diagnostics
   ps2recomp-patches/      numbered patch series applied to PS2Recomp
+  pcsx2-patches/          numbered patch series applied to PCSX2
   ghidra_scripts/         reproducible naming pipeline (run_all.ps1 rebuilds every name from a fresh import)
   *.py                    asset tools: iso9660, rtpk, tim2png, i3d2obj, str2wav, xvab, pss_audio, elfr, vudis …
-  PS2Recomp/              submodule, pinned commit
+  PS2Recomp/, pcsx2/      submodules, pinned commits
 ```
 
-Not tracked (gitignored): `disc/`, `extracted/` (your dump, extracted assets, generated C++, builds, logs),
-`ghidra/` (Ghidra projects).
-
-## Research notes
-
-The analysis behind the port lives in [`notes/`](notes/). Some highlights:
-
-| File | Contents |
-|---|---|
-| [`engine.md`](notes/engine.md) | one frame from `main` to the GS, state machine, render path, threads |
-| [`classes.md`](notes/classes.md) | 290 C++ classes rebuilt from RTTI and vtables |
-| [`script-vm.md`](notes/script-vm.md) | the event-script interpreter and its 41 native calls |
-| [`file-system.md`](notes/file-system.md) | loading path from request to disc read, disc coverage |
-| [`port-strategy.md`](notes/port-strategy.md) | why recompilation, the seams, milestones |
-| [`renderer.md`](notes/renderer.md) | frame profile, GS diagnosis, renderer options |
-| [`glossary.md`](notes/glossary.md) | naming conventions (`dog/` is the 3D engine, `Bwn` is Brown) |
+Not tracked (gitignored): `disc/`, `extracted/` (your dump, extracted assets, generated C++, builds, logs,
+packages), `ghidra/` (Ghidra projects).
 
 ## Building
 
@@ -96,27 +101,36 @@ Full setup for a new machine is in [`SETUP.md`](SETUP.md). In short:
 and your own dump of the PAL disc (`SLES_542.18`).
 
 ```powershell
-git clone --recurse-submodules <this repo>
+git clone --recurse-submodules https://github.com/RaikoDenpa/RoR-Port.git
 # 1. Extract your disc dump into extracted/disc/  (python tools/iso9660.py)
 # 2. Rebuild the Ghidra project and names
 tools/ghidra_scripts/run_all.ps1 -Fresh
-# 3. Generate config, recompile, build, run
-python tools/port/build.py setup
-python tools/port/build.py recomp
-python tools/port/build.py build
-python tools/port/build.py run
+# 3. Dependencies (once): PCSX2's Windows dependencies, FFmpeg's decoder DLLs (pinned, checksummed)
+python tools/port/build.py pcsx2-deps
+python tools/port/build.py ffmpeg
+# 4. Export from Ghidra, then setup + config + recompile + PCSX2 + build
+python tools/port/build.py export
+python tools/port/build.py all
+# 5. Run, or package the launcher build
+python tools/port/build.py run --frames 0 --seconds 3600
+python tools/port/build.py dist
 ```
 
-The first full build takes about 17 minutes. Rebuilding after a change to one function takes seconds.
+A full build takes about 17 minutes (PCSX2's part is extra on the first run). Rebuilding after a change to one
+override takes seconds.
 
 ### Useful run options
 
 | Option | Does |
 |---|---|
-| `build.py run --frames N` | stop after N frames |
+| `build.py run --frames N` | stop after N frames (0 = never) |
 | `build.py run --pad-script "100+4:cross"` | press buttons at given frames (unattended runs) |
+| `--env ROR_MOVIES=0`, `--env ROR_SOUND=0` | skip movies; silence the sound driver (the regression tools use both) |
+| `--env ROR_GS=cpu` | PS2Recomp's software GS instead of PCSX2's |
+| `--env ROR_SCREENSHOT=F,…` | save the presented frame at those frames |
 | `--env ROR_PROFILE=FRAME:SECONDS` | sampling profile → `tools/port/profile.py` |
 | `--env ROR_GS_TRACE=FRAME --env ROR_GS_VRAM=1` | dump one frame's GS draws and memory → `tools/port/gs_trace.py`, `gs_vram.py` |
+| `tools/port/play_regress.py`, `gs_regress.py` | gameplay and renderer regression checks against reference runs |
 
 Logs go to `extracted/ps2recomp/run/` (`ror.log` includes the game's own script debug prints).
 
@@ -129,7 +143,8 @@ Logs go to `extracted/ps2recomp/run/` (`ror.log` includes the game's own script 
 
 ## Licence
 
-This project builds on [PS2Recomp](https://github.com/ran-j/PS2Recomp) (GPL-3.0), and the planned renderer
-uses [PCSX2](https://github.com/PCSX2/pcsx2) (GPL-3.0), so the port as a whole falls under GPL-3.0.
+This project builds on [PS2Recomp](https://github.com/ran-j/PS2Recomp) (GPL-3.0) and its renderer uses
+[PCSX2](https://github.com/PCSX2/pcsx2) (GPL-3.0), so the port as a whole falls under GPL-3.0. Movies are
+decoded with [FFmpeg](https://ffmpeg.org) (a GPL build, loaded at runtime).
 *Rule of Rose* is © Sony Computer Entertainment / Punchline. This project is not affiliated with or endorsed
 by them, and it does not include or distribute any of their content.
